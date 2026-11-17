@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Fixed
+- `state.get` returns `None` for an item whose `ttl` has passed, instead of the old value until DynamoDB's background sweep deletes it, which can take days. `claim_once` (agent and Lambda side) and `compare_and_set` treat such an item as absent too: an expired `claim#` marker or value no longer refuses a new claim or `expected=None`, and an expired value never matches `expected`. The Lambda-side fix reaches a stack with the next deploy; the agent-side fix reaches an existing project only when its vendored `socialagent_runtime/` is replaced (`socialagent runtime update`) (#56).
+
 ## [2026.11.0] - 2026-11-13
 
 **Upgrading a project.** The agent runtime changed in this release (outbound reactions), and a project's `socialagent_runtime/` is a copy made by `socialagent init`, so it keeps the old one until it is replaced. A CLI installed from PyPI has no git history to tell an earlier copy from a later or edited one, so `socialagent runtime status` reports the copy as `unknown` and `socialagent runtime update` refuses it: run `socialagent runtime update --force`, which keeps a backup under `.socialagent/runtime-backups/`.
