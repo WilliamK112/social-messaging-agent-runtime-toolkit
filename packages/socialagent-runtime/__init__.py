@@ -432,7 +432,7 @@ def _install_session_read_guard() -> None:
                         mask_phone(session_id),
                         mask_phone(getattr(self.config, "actor_id", "?")),
                         type(exc).__name__,
-                        exc,
+                        mask_phone(str(exc)),
                     )
                     return recovered
                 # No valid session event remains — degrade to a fresh session and flag
@@ -444,7 +444,7 @@ def _install_session_read_guard() -> None:
                     mask_phone(getattr(self.config, "actor_id", "?")),
                     getattr(self.config, "memory_id", "?"),
                     type(exc).__name__,
-                    exc,
+                    mask_phone(str(exc)),
                 )
                 recovered_sessions.add(session_id)
                 return None

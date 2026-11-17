@@ -100,8 +100,11 @@ async def log_delivered(
     # WhatsApp message.
     try:
         await memory_writer.log_assistant_message(phone, memory_text)
-    except Exception:
-        logger.exception(
-            "Message delivered to %s but memory write failed; not retrying the send",
+    except Exception as exc:
+        logger.error(
+            "Message delivered to %s but memory write failed; not retrying the send: "
+            "%s: %s",
             mask_phone(phone),
+            type(exc).__name__,
+            mask_phone(str(exc)),
         )

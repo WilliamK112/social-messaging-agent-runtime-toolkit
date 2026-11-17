@@ -14,12 +14,19 @@ the code itself must not log a full number or a user's words, at any level:
 Two gaps against that rule are still open, under M6 in docs/threat-model.md,
 and nothing here checks them. A WhatsApp message id (wamid) encodes the user's
 number, and the attachment warnings and the personal-assistant webhook's PDF
-warning log it whole. An exception's own text can quote the number, and a
-traceback, or a warning that quotes the error such as the agent runtime's
-session_read_recovered, logs it unmasked. The message ids in these tests encode
-no number, and the exceptions that reach a traceback or an unmasked warning quote
-none; the errors here that do quote the number are raised on lines that mask the
-error text.
+warning log it whole. An exception's own text can quote the number, and the lines
+that still log a traceback (logger.exception, exc_info=True), such as the
+webhook's "AgentCore invocation failed", or log the raw error, such as the
+personal-assistant webhook's transcription warning, log it unmasked. The message ids in these
+tests encode no number, and the exceptions that reach one of those tracebacks
+quote none.
+
+The lines that log an exception's text after a failed send, memory write,
+session read or scheduled turn (with_retry, the webhook's two send failures, the
+memory write after a delivery, the agent runtime's session_read_recovered and the
+personal-assistant scheduled-turn failure) log its type and ``mask_phone`` of its
+text instead. The tests in the last section raise errors that quote the number at
+each of them.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from socialagent.buffer import FlushDecision, IngestResult, MessageBuffer, store
 from socialagent.config import SocialAgentConfig
 from socialagent.handlers.common import log_delivered, send_and_log
 from socialagent.handlers.event import make_event_handler
+from socialagent.handlers.scheduled import with_retry
 from socialagent.handlers.webhook import make_webhook_handler
 from socialagent.memory.writer import SocialAgentMemoryWriter
 from socialagent.providers.eum_social import EUMSocialProvider
@@ -503,6 +511,7 @@ def _guarded_manager(monkeypatch, read_session, read_agent):
         session_manager_mod,
         "AgentCoreMemorySessionManager",
         FakeAgentCoreMemorySessionManager,
+        raising=False,
     )
     monkeypatch.setattr(socialagent_runtime, "_session_read_guard_installed", False)
     socialagent_runtime._install_session_read_guard()
@@ -686,3 +695,168 @@ def test_a_removed_reaction_logs_no_full_number(caplog):
         make_webhook_handler(_config(), provider)({"e": 1})
     assert "Reaction removed by +...0100" in caplog.text
     _assert_masked(caplog)
+
+
+# ── an exception's own text can quote the number ──────────────────────────────
+
+
+def _assert_no_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    """A traceback prints the exception's text whole, so none may be logged."""
+    assert not [r for r in caplog.records if r.exc_info]
+    assert "Traceback" not in caplog.text
+
+
+class _LambdaContext:
+    def __init__(self, seconds_left: float) -> None:
+        self._seconds_left = seconds_left
+
+    def get_remaining_time_in_millis(self) -> int:
+        return int(self._seconds_left * 1000)
+
+
+def test_a_scheduled_send_that_fails_permanently_logs_the_error_masked(caplog):
+    async def send():
+        raise RuntimeError(f"recipient {PHONE} is not on WhatsApp")
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
+        asyncio.run(with_retry("send_text reminder-...0100", send))
+    assert (
+        "Scheduled send send_text reminder-...0100 failed permanently: "
+        "RuntimeError: recipient +...0100 is not on WhatsApp" in caplog.text
+    )
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_scheduled_send_that_cannot_be_retried_in_time_logs_the_error_masked(caplog):
+    async def send():
+        raise RuntimeError(f"ThrottlingException for {PHONE}")
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
+        asyncio.run(with_retry("send_text x", send, context=_LambdaContext(15)))
+    assert "15 s left" in caplog.text
+    assert "RuntimeError: ThrottlingException for +...0100" in caplog.text
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_scheduled_send_that_is_retried_logs_the_error_masked(caplog):
+    attempts = []
+
+    async def send():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError(f"ThrottlingException for {PHONE}")
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        patch("socialagent.handlers.scheduled.asyncio.sleep", new=AsyncMock()),
+    ):
+        asyncio.run(with_retry("send_text x", send))
+    assert len(attempts) == 2
+    assert "retrying: RuntimeError: ThrottlingException for +...0100" in caplog.text
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_failed_reply_send_logs_the_error_masked(caplog):
+    provider = _provider()
+    provider.send_text = AsyncMock(side_effect=RuntimeError(f"cannot send to {PHONE}"))
+    with (
+        patch(
+            "socialagent.handlers.webhook._invoke_runtime",
+            return_value=(MESSAGE_TEXT, []),
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        make_webhook_handler(_config(), provider)({"e": 1})
+    provider.send_text.assert_awaited()
+    assert "Failed to send response: RuntimeError: cannot send to +...0100" in (
+        caplog.text
+    )
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_failed_queued_message_logs_the_error_masked(caplog):
+    provider = _provider()
+    provider.send_text = AsyncMock(side_effect=RuntimeError(f"cannot send to {PHONE}"))
+    queued = [{"operation": "send_text", "text": MESSAGE_TEXT, "phone": PHONE}]
+    with (
+        patch(
+            "socialagent.handlers.webhook._invoke_runtime",
+            return_value=("", queued),
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        make_webhook_handler(_config(), provider)({"e": 1})
+    provider.send_text.assert_awaited()
+    assert (
+        "Failed to send outbound message 'send_text': "
+        "RuntimeError: cannot send to +...0100" in caplog.text
+    )
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_failed_memory_write_after_a_delivery_logs_the_error_masked(caplog):
+    writer = MagicMock()
+    writer.log_assistant_message = AsyncMock(
+        side_effect=RuntimeError(
+            f"no actor {DIGITS} in session whatsapp-session-conversation-52{DIGITS}"
+        )
+    )
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(log_delivered(writer, PHONE, MESSAGE_TEXT))
+    assert (
+        "Message delivered to +...0100 but memory write failed; not retrying the "
+        "send: RuntimeError: no actor ...0100 in session "
+        "whatsapp-session-conversation-...0100" in caplog.text
+    )
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+@pytest.mark.parametrize("recovers", [True, False], ids=["restored", "fresh"])
+def test_a_recovered_session_read_logs_the_corrupt_event_error_masked(
+    monkeypatch, caplog, recovers
+):
+    calls = []
+
+    def read_session(self, session_id, **kwargs):
+        calls.append(session_id)
+        if len(calls) == 1:
+            raise IndexError(f"no event for actor {DIGITS}")
+        return {"session": 1} if recovers else None
+
+    manager = _guarded_manager(monkeypatch, read_session, lambda *a, **k: None)
+    with caplog.at_level(logging.DEBUG):
+        manager.read_session("whatsapp-session-conversation-525555550100")
+    assert "IndexError: no event for actor ...0100)" in caplog.text
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)
+
+
+def test_a_failed_scheduled_agent_turn_logs_the_error_masked(monkeypatch, caplog):
+    mod = _blueprint_scheduler_module(monkeypatch)
+    monkeypatch.setattr(
+        mod,
+        "call_runtime",
+        AsyncMock(side_effect=RuntimeError(f"no session for {PHONE}")),
+    )
+    ctx = MagicMock()
+    ctx.lambda_context = None
+    ctx.send_text = AsyncMock()
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(
+            mod.handle_invoke_agent(
+                {"phone": PHONE, "prompt": "remind me", "schedule_id": "s-1"}, ctx
+            )
+        )
+    ctx.send_text.assert_awaited_once()
+    assert (
+        "Scheduled agent invocation failed: RuntimeError: no session for +...0100"
+        in caplog.text
+    )
+    _assert_masked(caplog)
+    _assert_no_traceback(caplog)

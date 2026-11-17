@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Fixed
+- A phone number quoted in an exception's text no longer reaches the logs unmasked. The lines that logged the exception whole, some with a traceback, now log its type and `mask_phone` of its text: `with_retry` (the permanent-failure lines and the retry warning), the webhook's send failures (the reply and each queued message), the memory-write failure after a delivery, the agent runtime's `session_read_recovered` warnings and the `personal-assistant` scheduled-turn failure. Other lines that log an error unmasked are unchanged, and `mask_phone` cuts each run of five or more digits in free text, so a number an error writes with spaces or dashes inside a sentence is not cut. The lines are still ERROR or WARNING, so a search for `failed permanently` finds the same lines, now ending in the error and with no traceback below them. The agent-runtime change reaches an existing project only when its vendored `socialagent_runtime/` is replaced (`socialagent runtime update`); the `personal-assistant` handler is project code, so an existing project makes the same edit by hand (#92).
+
 ## [2026.11.0] - 2026-11-13
 
 **Upgrading a project.** The agent runtime changed in this release (outbound reactions), and a project's `socialagent_runtime/` is a copy made by `socialagent init`, so it keeps the old one until it is replaced. A CLI installed from PyPI has no git history to tell an earlier copy from a later or edited one, so `socialagent runtime status` reports the copy as `unknown` and `socialagent runtime update` refuses it: run `socialagent runtime update --force`, which keeps a backup under `.socialagent/runtime-backups/`.
