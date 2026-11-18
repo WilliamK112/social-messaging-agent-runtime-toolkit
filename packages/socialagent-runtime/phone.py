@@ -111,7 +111,12 @@ def install_log_masking() -> None:
         try:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 - a log call must never raise
-            message = f"{record.msg} {record.args!r}"
+            try:
+                message = f"{record.msg} {record.args!r}"
+            except Exception:  # noqa: BLE001 - nor when the message cannot print
+                message = (
+                    f"<unprintable log message from {record.pathname}:{record.lineno}>"
+                )
         record.msg = mask_phone(message)
         record.args = None
         if record.exc_info:

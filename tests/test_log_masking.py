@@ -1000,3 +1000,26 @@ def test_a_record_whose_arguments_do_not_fit_still_logs_masked(plain_factory, in
         "x", logging.ERROR, __file__, 1, "count %d", (PHONE,), None
     )
     assert record.getMessage() == "count %d ('+...0100',)"
+
+
+class _Unprintable:
+    def __str__(self) -> str:
+        raise RuntimeError(f"cannot print {PHONE}")
+
+    __repr__ = __str__
+
+
+@_INSTALLERS
+@pytest.mark.parametrize(
+    ("msg", "args"),
+    [(_Unprintable(), ()), ("for %s", (_Unprintable(),))],
+    ids=["message", "argument"],
+)
+def test_a_record_that_cannot_be_printed_still_logs(plain_factory, install, msg, args):
+    """A log call must never raise, even when neither ``str`` nor ``repr`` works."""
+    install()
+    record = logging.getLogRecordFactory()(
+        "x", logging.ERROR, __file__, 1, msg, args, None
+    )
+    assert record.args is None
+    assert DIGITS not in record.getMessage()
