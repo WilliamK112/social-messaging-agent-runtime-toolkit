@@ -132,3 +132,23 @@ def test_a_tag_that_does_not_match_version_is_refused(repo):
     result = _run(work, "2026.11.0", shas["main"], tag="v2026.11.1")
     assert result.returncode != 0
     assert "does not match VERSION" in result.stdout
+
+
+@pytest.mark.parametrize("name", ["release/2026.11", "main"])
+def test_a_tag_named_like_a_reviewed_branch_does_not_stand_in_for_it(repo, name):
+    # A short name resolves a tag before a branch; only v* tags are protected,
+    # so anyone who can push could otherwise point one at unreviewed code.
+    work, shas = repo
+    _git(work, "push", "-q", "origin", "--delete", "release/2026.11")
+    _git(work, "tag", name, shas["unmerged"])
+    _git(work, "push", "-q", "origin", f"refs/tags/{name}")
+    result = _run(work, "2026.11.1", shas["unmerged"])
+    assert result.returncode != 0
+    assert "neither main nor release/2026.11" in result.stdout
+
+
+def test_a_missing_release_branch_says_so(repo):
+    work, shas = repo
+    result = _run(work, "2026.10.1", shas["unmerged"])
+    assert result.returncode != 0
+    assert "couldn't find remote ref refs/heads/release/2026.10" in result.stderr
