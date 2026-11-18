@@ -72,7 +72,7 @@ invocations, at-least-once delivery, idempotency).
 
 Returns every key stored for a phone. Paginates internally, so it's safe to
 call even if a user has accumulated more state than fits in one DynamoDB page.
-It also lists keys whose `ttl` has passed but that DynamoDB has not deleted yet, so that cleanup such as a memory reset still finds them; `get` returns `None` for those keys.
+Like `get`, it skips a key whose `ttl` has passed, even if DynamoDB has not deleted it yet. To remove a namespace, expired items included, use `delete_prefix`.
 
 ```python
 keys = await state.list_keys(phone)
@@ -182,7 +182,9 @@ and failing in prod (or vice versa).
 Deletes every stored item whose key starts with `prefix` for that phone.
 Returns the number of items deleted. Useful for cleaning up an append-only
 namespace in bulk (e.g. every `photo#{operation_id}#*` item once a flow
-completes) instead of tracking and deleting keys one at a time.
+completes) instead of tracking and deleting keys one at a time. Unlike
+`list_keys` and `list_items`, it also deletes items whose `ttl` has passed but
+that DynamoDB has not deleted yet, and counts them in the result.
 
 ```python
 deleted = await state.delete_prefix(phone, f"photo#{operation_id}#")
@@ -194,7 +196,8 @@ Returns the deserialized value of every stored item whose key starts with
 `prefix`, in one DynamoDB query — use this instead of `list_keys` + N
 individual `get` calls when you need the actual data for a whole namespace,
 not just the key names. Only items whose value is a JSON object (`dict`) are
-returned.
+returned. Like `get`, it skips an item whose `ttl` has passed, even if DynamoDB
+has not deleted it yet.
 
 ```python
 photos = await state.list_items(phone, f"photo#{operation_id}#")

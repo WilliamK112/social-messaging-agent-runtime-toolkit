@@ -246,3 +246,39 @@ async def test_cas_keeps_an_item_that_has_no_ttl_live(table, agent):
     got = await agent.compare_and_set(PHONE, "k", "old", lambda: "new")
 
     assert got == "new"
+
+
+# ── list_keys / list_items hide an expired item; delete_prefix still finds it ─
+
+
+async def test_list_keys_skips_an_expired_item(table, agent):
+    """``get`` returns ``None`` for an expired key, so ``list_keys`` must not
+    list it either; a live key and a key with no ``ttl`` are still listed."""
+    await agent.put(PHONE, "live", "a")
+    await agent.put(PHONE, "gone", "b")
+    _expire(table, "gone")
+    table.put_item(Item={"pk": PHONE, "sk": "forever", "data": json.dumps("c")})
+
+    assert sorted(await agent.list_keys(PHONE)) == ["forever", "live"]
+
+
+async def test_list_items_skips_an_expired_item(table, agent):
+    await agent.put(PHONE, "photo#1", {"n": 1})
+    await agent.put(PHONE, "photo#2", {"n": 2})
+    _expire(table, "photo#2")
+    table.put_item(Item={"pk": PHONE, "sk": "photo#3", "data": json.dumps({"n": 3})})
+
+    items = await agent.list_items(PHONE, "photo#")
+
+    assert sorted(i["n"] for i in items) == [1, 3]
+
+
+async def test_delete_prefix_still_deletes_an_expired_item(table, agent):
+    """Cleanup must not leave an expired item behind for the sweep."""
+    await agent.put(PHONE, "photo#1", {"n": 1})
+    await agent.put(PHONE, "photo#2", {"n": 2})
+    _expire(table, "photo#2")
+
+    assert await agent.delete_prefix(PHONE, "photo#") == 2
+
+    assert "Item" not in table.get_item(Key={"pk": PHONE, "sk": "photo#2"})

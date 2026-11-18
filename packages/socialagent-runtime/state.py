@@ -64,6 +64,16 @@ def _expired(item: dict) -> bool:
     return ttl is not None and ttl < int(time.time())
 
 
+def _live() -> Any:
+    """A query filter that keeps only items ``_expired`` would not reject.
+
+    ``list_keys`` and ``list_items`` use it so they agree with ``get``;
+    ``delete_prefix`` does not, so cleanup still removes expired items.
+    """
+    attr = boto3.dynamodb.conditions.Attr("ttl")
+    return attr.not_exists() | attr.gte(int(time.time()))
+
+
 def _dev_read() -> dict:
     """Read the dev-mode state JSON file, returning ``{}`` if absent or corrupt."""
     try:
@@ -176,6 +186,7 @@ async def list_keys(phone: str) -> list[str]:
         keys: list[str] = []
         kwargs: dict[str, Any] = {
             "KeyConditionExpression": boto3.dynamodb.conditions.Key("pk").eq(phone),
+            "FilterExpression": _live(),
             "ProjectionExpression": "sk",
         }
         while True:
@@ -475,6 +486,7 @@ async def list_items(phone: str, prefix: str) -> list[dict]:
 
     Reuses the existing per-pk query so multi-record reads (e.g. all `ad#*`
     items for one user) cost a single DynamoDB call instead of N get_item calls.
+    Like ``get``, it skips an item whose ``ttl`` has passed.
     """
     table = _get_table()
     if table is None:
@@ -494,6 +506,7 @@ async def list_items(phone: str, prefix: str) -> list[dict]:
                 boto3.dynamodb.conditions.Key("pk").eq(phone)
                 & boto3.dynamodb.conditions.Key("sk").begins_with(prefix)
             ),
+            "FilterExpression": _live(),
         }
         while True:
             resp = table.query(**kwargs)
