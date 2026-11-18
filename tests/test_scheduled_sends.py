@@ -440,23 +440,20 @@ def test_a_lost_scheduled_send_names_its_firing(table, provider, which, caplog):
     """On the notification Lambda this line is all a lost send leaves: Lambda's
     retry answers duplicate, so the payload reaches no DLQ, and one error does
     not set off the error alarm. So it names the schedule and the time it was
-    due, as the line for a repeated delivery does, the number masked. It ends
-    with the error's type and text, masked too, in place of a traceback."""
-    error = _eum_error("ValidationException")
-    provider.send_text = AsyncMock(side_effect=error)
+    due, as the line for a repeated delivery does, the number masked."""
+    provider.send_text = AsyncMock(side_effect=_eum_error("ValidationException"))
     handler = _handler(which, provider, table)
     with caplog.at_level(logging.ERROR), pytest.raises(ClientError):
         _deliver(handler, _scheduled("send_text", text="Hola"))
     assert _errors(caplog) == [
         "Scheduled send send_text ...0100-send_text-abcd1234 due "
-        f"{NINE} failed permanently: ClientError: {error}"
+        f"{NINE} failed permanently"
     ]
     assert DIGITS not in caplog.text
 
 
 def test_a_lost_schedule_message_text_names_its_firing(table, provider, caplog):
-    error = _eum_error("ValidationException")
-    provider.send_text = AsyncMock(side_effect=error)
+    provider.send_text = AsyncMock(side_effect=_eum_error("ValidationException"))
     handler = _handler("scheduler", provider, table)
     event = {
         "source": "socialagent_scheduler",
@@ -468,8 +465,7 @@ def test_a_lost_schedule_message_text_names_its_firing(table, provider, caplog):
     with caplog.at_level(logging.ERROR), pytest.raises(ClientError):
         _deliver(handler, event)
     assert _errors(caplog) == [
-        f"Scheduled send direct_text reminder-...0100 due {NINE} failed permanently: "
-        f"ClientError: {error}"
+        f"Scheduled send direct_text reminder-...0100 due {NINE} failed permanently"
     ]
 
 

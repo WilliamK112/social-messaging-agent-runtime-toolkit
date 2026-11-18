@@ -19,10 +19,15 @@ from ._devfiles import dev_dir, private_dir
 from ._history import list_replay_safe
 from .phone import (
     actor_id_for_phone,
+    install_log_masking,
     mask_phone,
     normalize_phone,
     session_id_for_phone,
 )
+
+# An exception's text or traceback can quote a user's number; a record factory
+# masks it before any handler sees the record, whoever installs the handlers.
+install_log_masking()
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +437,7 @@ def _install_session_read_guard() -> None:
                         mask_phone(session_id),
                         mask_phone(getattr(self.config, "actor_id", "?")),
                         type(exc).__name__,
-                        mask_phone(str(exc)),
+                        exc,
                     )
                     return recovered
                 # No valid session event remains — degrade to a fresh session and flag
@@ -444,7 +449,7 @@ def _install_session_read_guard() -> None:
                     mask_phone(getattr(self.config, "actor_id", "?")),
                     getattr(self.config, "memory_id", "?"),
                     type(exc).__name__,
-                    mask_phone(str(exc)),
+                    exc,
                 )
                 recovered_sessions.add(session_id)
                 return None

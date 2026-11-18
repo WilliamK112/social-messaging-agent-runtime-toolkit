@@ -177,12 +177,8 @@ async def handle_invoke_agent(data: dict, ctx: EventContext) -> None:
             # for spacing a template parameter cannot keep.
             if preview != " ".join(text.split()) or "\n" in text:
                 await _send_task_result(ctx, phone, text)
-    except Exception as exc:
-        logger.error(
-            "Scheduled agent invocation failed: %s: %s",
-            type(exc).__name__,
-            mask_phone(str(exc)),
-        )
+    except Exception:
+        logger.exception("Scheduled agent invocation failed")
         await ctx.send_text(phone, TASK_FAILED_TEXT)
 
 

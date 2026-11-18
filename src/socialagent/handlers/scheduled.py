@@ -111,32 +111,24 @@ async def with_retry(
             return
         except Exception as exc:
             if attempt == SEND_MAX_ATTEMPTS or not is_retryable(exc):
-                logger.error(
-                    "Scheduled send %s failed permanently: %s: %s",
-                    label,
-                    type(exc).__name__,
-                    mask_phone(str(exc)),
-                )
+                logger.exception("Scheduled send %s failed permanently", label)
                 raise
             pause = SEND_RETRY_BACKOFF * attempt
             left = seconds_left(context)
             if left is not None and left - pause < RETRY_RESERVE_SECONDS:
-                logger.error(
+                logger.exception(
                     "Scheduled send %s failed permanently: %.0f s left before "
-                    "the Lambda times out, too few to try it again: %s: %s",
+                    "the Lambda times out, too few to try it again",
                     label,
                     left,
-                    type(exc).__name__,
-                    mask_phone(str(exc)),
                 )
                 raise
             logger.warning(
-                "Scheduled send %s failed (attempt %d/%d), retrying: %s: %s",
+                "Scheduled send %s failed (attempt %d/%d), retrying: %s",
                 label,
                 attempt,
                 SEND_MAX_ATTEMPTS,
-                type(exc).__name__,
-                mask_phone(str(exc)),
+                exc,
             )
             await asyncio.sleep(pause)
 

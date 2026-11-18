@@ -11,22 +11,20 @@ recognises, not message text as such. So
 the code itself must not log a full number or a user's words, at any level:
 ``LOG_LEVEL`` is a per-Lambda setting an operator can turn up to DEBUG.
 
+An exception's own text can quote the number. Importing either layer installs
+a log record factory (install_log_masking) that puts every record through
+``mask_phone`` before any handler sees it: the message, the traceback with its
+chained exceptions, and the stack. The tests in the last two sections raise
+errors that quote the number at the lines that log one, and check the factory
+under a standard formatter and under one that reads ``exc_info`` itself.
+
 Two gaps against that rule are still open, under M6 in docs/threat-model.md,
 and nothing here checks them. A WhatsApp message id (wamid) encodes the user's
 number, and the attachment warnings and the personal-assistant webhook's PDF
-warning log it whole. An exception's own text can quote the number, and the lines
-that still log a traceback (logger.exception, exc_info=True), such as the
-webhook's "AgentCore invocation failed", or log the raw error, such as the
-personal-assistant webhook's transcription warning, log it unmasked. The message ids in these
-tests encode no number, and the exceptions that reach one of those tracebacks
-quote none.
-
-The lines that log an exception's text after a failed send, memory write,
-session read or scheduled turn (with_retry, the webhook's two send failures, the
-memory write after a delivery, the agent runtime's session_read_recovered and the
-personal-assistant scheduled-turn failure) log its type and ``mask_phone`` of its
-text instead. The tests in the last section raise errors that quote the number at
-each of them.
+warning log it whole; the message ids in these tests encode no number. And
+``mask_phone`` cuts only runs of five or more digits in free text, so a number
+an error writes with spaces or dashes inside a sentence is not cut; the
+exceptions here quote numbers without separators.
 """
 
 from __future__ import annotations
@@ -34,6 +32,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib.util
+import io
 import json
 import logging
 import sys
@@ -53,7 +52,7 @@ from socialagent.memory.writer import SocialAgentMemoryWriter
 from socialagent.providers.eum_social import EUMSocialProvider
 from socialagent.providers.utils import extract_changes
 from socialagent.types import MessageType
-from socialagent.utils.phone import mask_phone
+from socialagent.utils.phone import install_log_masking, mask_phone
 
 _AGENT_PATH = str(Path(__file__).parent.parent / "packages" / "socialagent-runtime")
 if _AGENT_PATH not in sys.path:
@@ -66,6 +65,9 @@ from bedrock_agentcore.memory.integrations.strands import (  # noqa: E402
 )
 
 import socialagent_runtime  # noqa: E402
+from socialagent_runtime.phone import (  # noqa: E402
+    install_log_masking as runtime_install_log_masking,
+)
 from socialagent_runtime.phone import mask_phone as runtime_mask_phone  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -461,9 +463,15 @@ def test_a_task_result_that_cannot_follow_its_notice_logs_no_full_number(
 
 
 def _mask_phone_source(path: Path) -> str:
-    """The source of ``mask_phone`` and the patterns it uses, from one copy."""
+    """The source of ``mask_phone``, ``install_log_masking`` and what they use, from one copy."""
     source = path.read_text()
-    names = {"mask_phone", "_PHONE_SHAPED", "_DIGIT_RUN"}
+    names = {
+        "mask_phone",
+        "_PHONE_SHAPED",
+        "_DIGIT_RUN",
+        "install_log_masking",
+        "_MASKING_MARKER",
+    }
     return "\n".join(
         ast.get_source_segment(source, node)
         for node in ast.parse(source).body
@@ -477,6 +485,7 @@ def test_the_runtime_masks_with_the_same_code_as_the_lambdas() -> None:
     sdk = _mask_phone_source(REPO / "src" / "socialagent" / "utils" / "phone.py")
     runtime = _mask_phone_source(REPO / "packages" / "socialagent-runtime" / "phone.py")
     assert "def mask_phone" in sdk
+    assert "def install_log_masking" in sdk
     assert runtime == sdk, (
         "mask_phone in packages/socialagent-runtime/phone.py differs from the one in "
         "src/socialagent/utils/phone.py; copy one over the other"
@@ -700,10 +709,10 @@ def test_a_removed_reaction_logs_no_full_number(caplog):
 # ── an exception's own text can quote the number ──────────────────────────────
 
 
-def _assert_no_traceback(caplog: pytest.LogCaptureFixture) -> None:
-    """A traceback prints the exception's text whole, so none may be logged."""
+def _assert_masked_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    """The traceback is kept for debugging, its text masked by the record factory."""
+    assert "Traceback (most recent call last)" in caplog.text
     assert not [r for r in caplog.records if r.exc_info]
-    assert "Traceback" not in caplog.text
 
 
 class _LambdaContext:
@@ -720,12 +729,12 @@ def test_a_scheduled_send_that_fails_permanently_logs_the_error_masked(caplog):
 
     with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
         asyncio.run(with_retry("send_text reminder-...0100", send))
-    assert (
-        "Scheduled send send_text reminder-...0100 failed permanently: "
-        "RuntimeError: recipient +...0100 is not on WhatsApp" in caplog.text
+    assert "Scheduled send send_text reminder-...0100 failed permanently" in (
+        caplog.text
     )
+    assert "RuntimeError: recipient +...0100 is not on WhatsApp" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
 
 
 def test_a_scheduled_send_that_cannot_be_retried_in_time_logs_the_error_masked(caplog):
@@ -737,7 +746,7 @@ def test_a_scheduled_send_that_cannot_be_retried_in_time_logs_the_error_masked(c
     assert "15 s left" in caplog.text
     assert "RuntimeError: ThrottlingException for +...0100" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
 
 
 def test_a_scheduled_send_that_is_retried_logs_the_error_masked(caplog):
@@ -754,9 +763,8 @@ def test_a_scheduled_send_that_is_retried_logs_the_error_masked(caplog):
     ):
         asyncio.run(with_retry("send_text x", send))
     assert len(attempts) == 2
-    assert "retrying: RuntimeError: ThrottlingException for +...0100" in caplog.text
+    assert "retrying: ThrottlingException for +...0100" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
 
 
 def test_a_failed_reply_send_logs_the_error_masked(caplog):
@@ -771,11 +779,10 @@ def test_a_failed_reply_send_logs_the_error_masked(caplog):
     ):
         make_webhook_handler(_config(), provider)({"e": 1})
     provider.send_text.assert_awaited()
-    assert "Failed to send response: RuntimeError: cannot send to +...0100" in (
-        caplog.text
-    )
+    assert "Failed to send response" in caplog.text
+    assert "RuntimeError: cannot send to +...0100" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
 
 
 def test_a_failed_queued_message_logs_the_error_masked(caplog):
@@ -791,12 +798,10 @@ def test_a_failed_queued_message_logs_the_error_masked(caplog):
     ):
         make_webhook_handler(_config(), provider)({"e": 1})
     provider.send_text.assert_awaited()
-    assert (
-        "Failed to send outbound message 'send_text': "
-        "RuntimeError: cannot send to +...0100" in caplog.text
-    )
+    assert "Failed to send outbound message 'send_text'" in caplog.text
+    assert "RuntimeError: cannot send to +...0100" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
 
 
 def test_a_failed_memory_write_after_a_delivery_logs_the_error_masked(caplog):
@@ -809,12 +814,15 @@ def test_a_failed_memory_write_after_a_delivery_logs_the_error_masked(caplog):
     with caplog.at_level(logging.DEBUG):
         asyncio.run(log_delivered(writer, PHONE, MESSAGE_TEXT))
     assert (
-        "Message delivered to +...0100 but memory write failed; not retrying the "
-        "send: RuntimeError: no actor ...0100 in session "
-        "whatsapp-session-conversation-...0100" in caplog.text
+        "Message delivered to +...0100 but memory write failed; not retrying the send"
+        in caplog.text
+    )
+    assert (
+        "RuntimeError: no actor ...0100 in session whatsapp-session-conversation-...0100"
+        in caplog.text
     )
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
 
 
 @pytest.mark.parametrize("recovers", [True, False], ids=["restored", "fresh"])
@@ -834,7 +842,6 @@ def test_a_recovered_session_read_logs_the_corrupt_event_error_masked(
         manager.read_session("whatsapp-session-conversation-525555550100")
     assert "IndexError: no event for actor ...0100)" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
 
 
 def test_a_failed_scheduled_agent_turn_logs_the_error_masked(monkeypatch, caplog):
@@ -854,9 +861,142 @@ def test_a_failed_scheduled_agent_turn_logs_the_error_masked(monkeypatch, caplog
             )
         )
     ctx.send_text.assert_awaited_once()
-    assert (
-        "Scheduled agent invocation failed: RuntimeError: no session for +...0100"
-        in caplog.text
-    )
+    assert "Scheduled agent invocation failed" in caplog.text
+    assert "RuntimeError: no session for +...0100" in caplog.text
     _assert_masked(caplog)
-    _assert_no_traceback(caplog)
+    _assert_masked_traceback(caplog)
+
+
+# ── the record factory masks every record, its traceback included ────────────
+
+
+@pytest.fixture
+def plain_factory():
+    """A process with no masking factory, restored afterwards.
+
+    Importing ``socialagent`` installed one for the whole test run.
+    """
+    installed = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(logging.LogRecord)
+    yield
+    logging.setLogRecordFactory(installed)
+
+
+_INSTALLERS = pytest.mark.parametrize(
+    "install",
+    [install_log_masking, runtime_install_log_masking],
+    ids=["lambda", "runtime"],
+)
+
+
+def _log_chained_failure(logger: logging.Logger) -> None:
+    """Log a chained exception whose every part quotes the number."""
+    try:
+        try:
+            {}[PHONE]
+        except KeyError as exc:
+            raise RuntimeError(f"no session for actor {DIGITS}") from exc
+    except RuntimeError:
+        try:
+            raise ValueError(f"cleanup failed for {PHONE}")
+        except ValueError:
+            logger.exception("Turn for %s failed", PHONE, stack_info=True)
+
+
+def _record(logger_name: str, formatter: logging.Formatter) -> str:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(formatter)
+    logger = logging.getLogger(logger_name)
+    logger.addHandler(handler)
+    logger.propagate = False
+    try:
+        _log_chained_failure(logger)
+    finally:
+        logger.removeHandler(handler)
+    return stream.getvalue()
+
+
+def _real_request_context_formatter() -> type[logging.Formatter]:
+    """The real ``RequestContextFormatter``; conftest stands a mock in for the package."""
+    mocked = {k: m for k, m in sys.modules.items() if k.startswith("bedrock_agentcore")}
+    for name in mocked:
+        del sys.modules[name]
+    try:
+        from bedrock_agentcore.runtime.app import RequestContextFormatter
+    except ImportError:
+        pytest.skip("bedrock-agentcore is not installed")
+    finally:
+        for name in [k for k in sys.modules if k.startswith("bedrock_agentcore")]:
+            del sys.modules[name]
+        sys.modules.update(mocked)
+    return RequestContextFormatter
+
+
+def test_importing_either_layer_installs_the_masking_factory() -> None:
+    assert getattr(logging.getLogRecordFactory(), "_socialagent_masks_phone_numbers")
+
+
+@_INSTALLERS
+def test_a_standard_formatter_logs_the_whole_traceback_masked(plain_factory, install):
+    """Lambda's text log format is a standard ``logging.Formatter``."""
+    install()
+    out = _record(
+        f"mask-std-{install.__module__}",
+        logging.Formatter("[%(levelname)s]\t%(name)s\t%(message)s"),
+    )
+    assert "Turn for +...0100 failed" in out
+    assert out.count("Traceback (most recent call last)") == 3
+    assert "KeyError: '+...0100'" in out
+    assert "RuntimeError: no session for actor ...0100" in out
+    assert "ValueError: cleanup failed for +...0100" in out
+    assert "direct cause of the following exception" in out
+    assert "During handling of the above exception" in out
+    assert "Stack (most recent call last)" in out
+    assert DIGITS not in out
+
+
+@_INSTALLERS
+def test_a_formatter_that_reads_the_exception_itself_gets_no_number(
+    plain_factory, install
+):
+    """``bedrock_agentcore``'s formatter reads ``exc_info``, not ``exc_text``."""
+    install()
+    out = _record(
+        f"mask-agentcore-{install.__module__}", _real_request_context_formatter()()
+    )
+    assert json.loads(out)["message"] == "Turn for +...0100 failed"
+    assert DIGITS not in out
+
+
+@_INSTALLERS
+def test_installing_twice_wraps_once_and_keeps_the_previous_factory(
+    plain_factory, install
+):
+    def previous(*args, **kwargs):
+        record = logging.LogRecord(*args, **kwargs)
+        record.seen_by_previous = True
+        return record
+
+    logging.setLogRecordFactory(previous)
+    install()
+    installed = logging.getLogRecordFactory()
+    install()
+    install_log_masking()
+    runtime_install_log_masking()
+    assert logging.getLogRecordFactory() is installed
+
+    record = installed("x", logging.ERROR, __file__, 1, "for %s", (PHONE,), None)
+    assert record.seen_by_previous
+    assert record.getMessage() == "for +...0100"
+    assert record.args is None
+
+
+@_INSTALLERS
+def test_a_record_whose_arguments_do_not_fit_still_logs_masked(plain_factory, install):
+    """A log call must never raise, even when its arguments are wrong."""
+    install()
+    record = logging.getLogRecordFactory()(
+        "x", logging.ERROR, __file__, 1, "count %d", (PHONE,), None
+    )
+    assert record.getMessage() == "count %d ('+...0100',)"

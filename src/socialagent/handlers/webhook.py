@@ -345,11 +345,7 @@ async def _send_response(
                 if attempt == 0 and _is_retryable(exc):
                     await asyncio.sleep(1)
                 else:
-                    logger.error(
-                        "Failed to send response: %s: %s",
-                        type(exc).__name__,
-                        mask_phone(str(exc)),
-                    )
+                    logger.exception("Failed to send response")
                     return
             else:
                 break
@@ -476,12 +472,10 @@ async def _invoke_and_respond(
             else:
                 continue
             delivered += 1
-        except Exception as exc:
-            logger.error(
-                "Failed to send outbound message %r: %s: %s",
+        except Exception:
+            logger.exception(
+                "Failed to send outbound message %r",
                 msg.get("operation") if isinstance(msg, dict) else type(msg).__name__,
-                type(exc).__name__,
-                mask_phone(str(exc)),
             )
     # An empty text after queued messages is a complete reply; WhatsApp rejects
     # a blank message, and the user already has the menu or list. Gated on
