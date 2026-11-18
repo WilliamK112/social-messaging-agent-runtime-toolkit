@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Changed
+- The per-user schedule cap fails closed: when the agent runtime cannot list a user's schedules to count them, `scheduler.schedule` raises `ScheduleLimitExceeded` and creates nothing, instead of counting 0 and creating the schedule (#94). `docs/events-scheduling.md` now describes the cap. Existing projects pick this up with `socialagent runtime update`.
+
 ## [2026.11.0] - 2026-11-13
 
 **Upgrading a project.** The agent runtime changed in this release (outbound reactions), and a project's `socialagent_runtime/` is a copy made by `socialagent init`, so it keeps the old one until it is replaced. A CLI installed from PyPI has no git history to tell an earlier copy from a later or edited one, so `socialagent runtime status` reports the copy as `unknown` and `socialagent runtime update` refuses it: run `socialagent runtime update --force`, which keeps a backup under `.socialagent/runtime-backups/`.
