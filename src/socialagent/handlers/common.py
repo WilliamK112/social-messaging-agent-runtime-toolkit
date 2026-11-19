@@ -13,7 +13,9 @@ WhatsApp takes, with gaps that fit the Lambda's time.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from socialagent.constants import MAX_MSG_LEN
 from socialagent.handlers.runtime_call import seconds_left
@@ -24,6 +26,55 @@ from socialagent.types import OutboundMessage
 from socialagent.utils.phone import mask_phone
 
 logger = logging.getLogger(__name__)
+
+
+class MaskedHandlerError(RuntimeError):
+    """Stands in for an escaping exception whose text could not be masked in place."""
+
+
+def mask_exception_text(exc: BaseException) -> BaseException:
+    """Mask the phone numbers in ``exc``'s text, in place, and return it.
+
+    The Lambda Python runtime prints an exception that escapes a handler
+    itself, not through ``logging``, so the masking record factory never sees
+    it; it prints ``str(exc)`` and the stack frames, and returns the same text
+    in the error response and the DLQ's ``ErrorMessage``. Masking the
+    arguments in place keeps the exception's type, so retry decisions and
+    ``isinstance`` checks hold, and its traceback. Never raises.
+    """
+    try:
+        text = str(exc)
+        masked = mask_phone(text)
+        if masked == text:
+            return exc
+        exc.args = tuple(_masked_arg(arg) for arg in exc.args)
+        if mask_phone(str(exc)) == str(exc):
+            return exc
+        replacement = MaskedHandlerError(f"{type(exc).__name__}: {masked}")
+        replacement.__traceback__ = exc.__traceback__
+        replacement.__suppress_context__ = True
+        return replacement
+    except Exception:  # noqa: BLE001 - masking must never replace the real error
+        return exc
+
+
+def _masked_arg(arg: Any) -> Any:
+    if isinstance(arg, str):
+        return mask_phone(arg)
+    text = str(arg)
+    return arg if mask_phone(text) == text else mask_phone(text)
+
+
+def run_handler(coro: Any) -> Any:
+    """Run a Lambda handler's coroutine; an exception escapes with its text masked."""
+    try:
+        return asyncio.run(coro)
+    except Exception as exc:
+        masked = mask_exception_text(exc)
+        if masked is exc:
+            raise
+        raise masked from None
+
 
 # Once fewer seconds than this would be left after a gap, the remaining sends
 # go out back to back: enough for a handful of sends.
