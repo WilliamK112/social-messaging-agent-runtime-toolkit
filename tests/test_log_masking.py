@@ -4,10 +4,10 @@
 """The log lines checked here name a user by the last four digits of the phone,
 and carry no text.
 
-CloudWatch Logs data protection masks phone numbers only for the countries in
-``pii_phone_number_countries`` (it has no identifier for Mexico) and only in the
-Lambda log groups, not the agent runtime's, and it masks only the identifiers it
-recognises, not message text as such. So
+CloudWatch Logs data protection masks phone numbers in the Lambda log groups
+only for the countries in ``pii_phone_number_countries`` (it has no identifier
+for Mexico), it masks only the identifiers it recognises, not message text as
+such, and a principal with ``logs:Unmask`` reads the original. So
 the code itself must not log a full number or a user's words, at any level:
 ``LOG_LEVEL`` is a per-Lambda setting an operator can turn up to DEBUG.
 
@@ -29,6 +29,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -449,7 +450,7 @@ def test_a_task_result_that_cannot_follow_its_notice_logs_no_full_number(
     _assert_masked(caplog)
 
 
-# ── the agent runtime, whose log group has no data protection policy at all ──
+# ── the agent runtime ──
 
 
 def _mask_phone_source(path: Path) -> str:
@@ -686,3 +687,112 @@ def test_a_removed_reaction_logs_no_full_number(caplog):
         make_webhook_handler(_config(), provider)({"e": 1})
     assert "Reaction removed by +...0100" in caplog.text
     _assert_masked(caplog)
+
+
+# ── the agent runtime's log group, whose policy masks the ids that hold the number ──
+
+_MONITORING_TF = REPO / "infra-terraform" / "modules" / "monitoring" / "main.tf"
+
+
+def _runtime_log_group_identifiers() -> dict[str, str]:
+    """The custom data identifiers of the runtime log group's policy, name to
+    regex, from the Terraform map (an HCL string escapes as a JSON one does).
+
+    ``test_terraform_hardening.py`` checks that CloudWatch Logs accepts them
+    and that the policy lists them."""
+    match = re.search(
+        r"^\s*runtime_custom_data_identifiers\s*=\s*\{$(.*?)^\s*\}$",
+        _MONITORING_TF.read_text(),
+        re.M | re.S,
+    )
+    assert match, "runtime_custom_data_identifiers is gone from modules/monitoring"
+    return {
+        name: json.loads(value)
+        for name, value in re.findall(
+            r'^\s*(\w+)\s*=\s*("(?:[^"\\]|\\.)*")\s*$', match.group(1), re.M
+        )
+    }
+
+
+def _masked_by_the_runtime_log_group(text: str) -> str:
+    """*text* as those identifiers leave it: each match in asterisks."""
+    for regex in _runtime_log_group_identifiers().values():
+        text = re.sub(regex, lambda match: "*" * len(match.group()), text)
+    return text
+
+
+def test_the_runtime_log_group_masks_the_number_wherever_the_runtime_writes_it():
+    """In E.164 form, for any country, and in each id SMART builds from the
+    number: the conversation's session id, a scheduled task's, and the schedule
+    id the runtime generates, which personal-assistant's tools return to the
+    model and so reach Strands' record of the turn.
+
+    The ids are built by the code that builds them, so an id format the
+    identifiers miss fails here. Each identifier matches the whole of the id it
+    is for: the generated schedule id's regex also happens to catch a scheduled
+    task's digits, so the masked text alone would not show a session id
+    identifier gone.
+    """
+    from socialagent_runtime.phone import actor_id_for_phone, session_id_for_phone
+
+    schedule_id = runtime_scheduler._auto_schedule_id(
+        PHONE, "invoke_agent", {"prompt": "summarise my day"}, "cron(0 8 * * ? *)"
+    )
+    handler = REPO / "blueprints" / "personal-assistant" / "handlers" / "scheduler.py"
+    template = re.search(r'session_id = f"(scheduled-task-[^"]+)"', handler.read_text())
+    assert template, f"{handler} no longer builds a scheduled task's session id"
+    task_session = template.group(1).format(
+        digits=actor_id_for_phone(PHONE), schedule_id=schedule_id
+    )
+    whole = {
+        "E164PhoneNumber": PHONE,
+        "ConversationSessionId": session_id_for_phone(PHONE),
+        "ScheduledTaskSessionId": task_session,
+        "GeneratedScheduleId": schedule_id,
+    }
+    identifiers = _runtime_log_group_identifiers()
+    assert identifiers.keys() == whole.keys(), "an identifier has no case here"
+    for name, value in whole.items():
+        assert re.fullmatch(identifiers[name], value), f"{name} misses part of {value}"
+
+    texts = {
+        "a Mexican number": f"Text me at {PHONE} tomorrow",
+        "a US number": f"or at +1{DIGITS}",
+        "the conversation's session id": json.dumps(
+            {"session.id": session_id_for_phone(PHONE)}
+        ),
+        "a scheduled task's session id": json.dumps({"session.id": task_session}),
+        "a tool result": json.dumps(
+            {"status": "scheduled", "schedule_id": schedule_id}
+        ),
+        "a schedule name": "dev-bot-" + schedule_id.replace("_", "-"),
+    }
+    for case, text in texts.items():
+        masked = _masked_by_the_runtime_log_group(text)
+        assert DIGITS[-7:] not in masked, f"{case}: {masked}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "+...0100",
+        "whatsapp-session-conversation-...0100",
+        "2026-11-19T08:00:00.123Z",
+        '"timeUnixNano": 1763560000123456789',
+        "123e4567-e89b-12d3-a456-426614174000",
+        "1-6745a1b2-0123456789abcdef01234567",
+        '"inputTokens": 1234, "outputTokens": 56',
+    ],
+    ids=[
+        "masked-phone",
+        "masked-session",
+        "timestamp",
+        "epoch-nanos",
+        "uuid",
+        "trace-id",
+        "token-counts",
+    ],
+)
+def test_the_runtime_log_group_leaves_other_values_readable(text: str):
+    """A number ``mask_phone`` already cut, times, ids and counts stay as they are."""
+    assert _masked_by_the_runtime_log_group(text) == text
