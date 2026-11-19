@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Changed
+- The Release workflow also publishes a patch release tagged on its line's release branch (`v2026.11.1` on `release/2026.11`), which has the same protection as `main`; a tag on any other branch, or on another line's release branch, is still refused (#140).
+
 ### Fixed
 - A stack's first `socialagent deploy` no longer fails when CodeBuild tries the Lambda layer, agent image or zip package build before IAM has applied the service role's new policy. Such a build fails in `QUEUED` with `CLIENT_ERROR` and runs nothing; the apply now starts it again, up to six times with a growing pause, and still fails at once on a build that ran and failed. `infra-terraform/README.md` also says how to recover from the AWS provider's rare `EntityAlreadyExists` on a role it created itself (#211).
 
