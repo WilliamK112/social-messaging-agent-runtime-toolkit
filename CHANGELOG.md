@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Fixed
+- A stack's first `socialagent deploy` no longer fails when CodeBuild tries the Lambda layer, agent image or zip package build before IAM has applied the service role's new policy. Such a build fails in `QUEUED` with `CLIENT_ERROR` and runs nothing; the apply now starts it again, up to six times with a growing pause, and still fails at once on a build that ran and failed. `infra-terraform/README.md` also says how to recover from the AWS provider's rare `EntityAlreadyExists` on a role it created itself (#211).
+
 ## [2026.11.0] - 2026-11-13
 
 **Upgrading a project.** The agent runtime changed in this release (outbound reactions), and a project's `socialagent_runtime/` is a copy made by `socialagent init`, so it keeps the old one until it is replaced. A CLI installed from PyPI has no git history to tell an earlier copy from a later or edited one, so `socialagent runtime status` reports the copy as `unknown` and `socialagent runtime update` refuses it: run `socialagent runtime update --force`, which keeps a backup under `.socialagent/runtime-backups/`.
