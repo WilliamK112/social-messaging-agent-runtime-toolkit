@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Admin console
+- The Events table's row action is called "View summary" instead of "View full payload": it shows the masked summary the event Lambda logs, and the console never has the full payload (#87).
+
 ## [2026.11.0] - 2026-11-13
 
 **Upgrading a project.** The agent runtime changed in this release (outbound reactions), and a project's `socialagent_runtime/` is a copy made by `socialagent init`, so it keeps the old one until it is replaced. A CLI installed from PyPI has no git history to tell an earlier copy from a later or edited one, so `socialagent runtime status` reports the copy as `unknown` and `socialagent runtime update` refuses it: run `socialagent runtime update --force`, which keeps a backup under `.socialagent/runtime-backups/`.
