@@ -16,7 +16,8 @@ a log record factory (install_log_masking) that puts every record through
 ``mask_phone`` before any handler sees it: the message, the traceback with its
 chained exceptions, and the stack. The tests in the last two sections raise
 errors that quote the number at the lines that log one, and check the factory
-under a standard formatter and under one that reads ``exc_info`` itself.
+under a standard formatter, under one that reads ``exc_info`` itself, and under
+OpenTelemetry's ``LoggingHandler``, which gets the masked ``exception.*`` attributes.
 
 Two gaps against that rule are still open, under M6 in docs/threat-model.md,
 and nothing here checks them. A WhatsApp message id (wamid) encodes the user's
@@ -470,6 +471,7 @@ def _mask_phone_source(path: Path) -> str:
         "_PHONE_SHAPED",
         "_DIGIT_RUN",
         "install_log_masking",
+        "_move_exception",
         "_MASKING_MARKER",
     }
     return "\n".join(
@@ -1023,3 +1025,90 @@ def test_a_record_that_cannot_be_printed_still_logs(plain_factory, install, msg,
     )
     assert record.args is None
     assert DIGITS not in record.getMessage()
+
+
+def _otel_records(install, log):
+    """Records exported by OpenTelemetry's ``LoggingHandler`` after ``install``."""
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import (
+        InMemoryLogRecordExporter,
+        SimpleLogRecordProcessor,
+    )
+
+    install()
+    exporter = InMemoryLogRecordExporter()
+    provider = LoggerProvider()
+    provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+    handler = LoggingHandler(logger_provider=provider)
+    logger = logging.getLogger(f"otel-{install.__module__}")
+    logger.addHandler(handler)
+    logger.propagate = False
+    try:
+        log(logger)
+    finally:
+        logger.removeHandler(handler)
+        provider.shutdown()
+    return [r.log_record for r in exporter.get_finished_logs()]
+
+
+@_INSTALLERS
+def test_otel_exports_the_exception_masked(plain_factory, install):
+    """OTel's ``LoggingHandler`` reads only ``exc_info``, which the factory clears,
+    so the factory carries the exception on the record as the three OTel
+    attributes, masked (the agent runtime exports through ADOT)."""
+    (record,) = _otel_records(install, _log_chained_failure)
+    attributes = dict(record.attributes)
+    assert record.body == "Turn for +...0100 failed"
+    assert attributes["exception.type"] == "ValueError"
+    assert attributes["exception.message"] == "cleanup failed for +...0100"
+    stack = attributes["exception.stacktrace"]
+    assert "Traceback (most recent call last)" in stack
+    assert "RuntimeError: no session for actor ...0100" in stack
+    assert "KeyError: '+...0100'" in stack
+    assert DIGITS not in json.dumps({k: str(v) for k, v in attributes.items()})
+
+
+@_INSTALLERS
+def test_otel_exception_type_is_the_qualified_name(plain_factory, install):
+    class Outer:
+        class InnerError(Exception):
+            pass
+
+    def log(logger):
+        try:
+            raise Outer.InnerError(f"for {PHONE}")
+        except Outer.InnerError:
+            logger.exception("failed")
+
+    (record,) = _otel_records(install, log)
+    assert record.attributes["exception.type"].endswith("Outer.InnerError")
+    assert record.attributes["exception.message"] == "for +...0100"
+
+
+@_INSTALLERS
+def test_an_exception_whose_text_cannot_print_still_exports(plain_factory, install):
+    def log(logger):
+        try:
+            raise _UnprintableError()
+        except _UnprintableError:
+            logger.exception("failed for %s", PHONE)
+
+    (record,) = _otel_records(install, log)
+    assert record.body == "failed for +...0100"
+    assert record.attributes["exception.type"].endswith("_UnprintableError")
+    assert DIGITS not in str(dict(record.attributes))
+
+
+class _UnprintableError(Exception):
+    def __str__(self) -> str:
+        raise RuntimeError(f"cannot print {PHONE}")
+
+
+@_INSTALLERS
+def test_a_malformed_exc_info_does_not_raise_at_the_call_site(plain_factory, install):
+    install()
+    record = logging.getLogRecordFactory()(
+        "x", logging.ERROR, __file__, 1, "for %s", (PHONE,), (1, 2)
+    )
+    assert record.getMessage() == "for +...0100"
+    assert record.exc_info is None
