@@ -4,6 +4,9 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ## [Unreleased]
 
+### Changed
+- The Release workflow also publishes a patch release tagged on its line's release branch (`v2026.11.1` on `release/2026.11`), which has the same protection as `main`; a tag on any other branch, or on another line's release branch, is still refused (#140).
+
 ### Admin console
 - The Events table's row action is called "View summary" instead of "View full payload": it shows the masked summary the event Lambda logs, and the console never has the full payload (#87).
 
