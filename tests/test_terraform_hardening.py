@@ -3280,14 +3280,16 @@ _BUILD_SCRIPTS = {
     "build_layer": INFRA / "packaging.tf",
     "trigger_build": CODEBUILD_TF,
     "build_zip_package": CODEBUILD_TF,
+    "trigger_template_sync": INFRA / "modules" / "templates" / "main.tf",
 }
 
 
 def _run_build_script(tmp_path: Path, resource: str, builds: list[tuple[str, str]]):
     """Run a build provisioner against a stand-in ``aws`` and a no-op ``sleep``.
 
-    *builds* gives, per ``start-build``, the build's final status and the status
-    of its ``QUEUED`` phase. Returns the result and the number of builds started.
+    *builds* gives, per ``start-build``, the build's final status and what the
+    never-ran query answers for it (``"1"`` when it failed in ``QUEUED`` with
+    ``CLIENT_ERROR``, ``"0"`` otherwise). Returns the result and the number of builds started.
     """
     header = f'resource "null_resource" "{resource}"'
     script = _heredoc(_code(_BUILD_SCRIPTS[resource].read_text()), header, "command")
@@ -3338,9 +3340,9 @@ def test_a_build_that_could_not_start_is_started_again(tmp_path: Path, resource:
         tmp_path,
         resource,
         [
-            ("FAILED", "CLIENT_ERROR"),
-            ("FAILED", "CLIENT_ERROR"),
-            ("SUCCEEDED", "SUCCEEDED"),
+            ("FAILED", "1"),
+            ("FAILED", "1"),
+            ("SUCCEEDED", "0"),
         ],
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -3353,7 +3355,7 @@ def test_a_build_that_ran_and_failed_is_not_started_again(
     tmp_path: Path, resource: str
 ):
     """A build that got past QUEUED and failed is a real failure: one start, exit 1."""
-    result, starts = _run_build_script(tmp_path, resource, [("FAILED", "SUCCEEDED")])
+    result, starts = _run_build_script(tmp_path, resource, [("FAILED", "0")])
     assert result.returncode == 1, result.stdout + result.stderr
     assert starts == 1
 
@@ -3363,11 +3365,73 @@ def test_a_build_that_never_starts_gives_up_after_six_tries(
     tmp_path: Path, resource: str
 ):
     """A role that is wrong, not just new, still fails the apply, after six starts."""
-    result, starts = _run_build_script(
-        tmp_path, resource, [("FAILED", "CLIENT_ERROR")] * 7
-    )
+    result, starts = _run_build_script(tmp_path, resource, [("FAILED", "1")] * 7)
     assert result.returncode == 1, result.stdout + result.stderr
     assert starts == 6
+
+
+_PHASES = {
+    "phaseStatus CLIENT_ERROR (what the API returns today)": (
+        [
+            {"phaseType": "SUBMITTED", "phaseStatus": "SUCCEEDED"},
+            {
+                "phaseType": "QUEUED",
+                "phaseStatus": "CLIENT_ERROR",
+                "contexts": [
+                    {"message": "not authorized to perform: logs:CreateLogStream"}
+                ],
+            },
+            {"phaseType": "COMPLETED"},
+        ],
+        1,
+    ),
+    "phaseStatus FAILED with a CLIENT_ERROR context (the documented shape)": (
+        [
+            {
+                "phaseType": "QUEUED",
+                "phaseStatus": "FAILED",
+                "contexts": [{"statusCode": "CLIENT_ERROR", "message": "..."}],
+            },
+            {"phaseType": "COMPLETED"},
+        ],
+        1,
+    ),
+    "queued fine, failed in BUILD": (
+        [
+            {"phaseType": "QUEUED", "phaseStatus": "SUCCEEDED"},
+            {
+                "phaseType": "BUILD",
+                "phaseStatus": "FAILED",
+                "contexts": [{"statusCode": "COMMAND_EXECUTION_ERROR"}],
+            },
+        ],
+        0,
+    ),
+    "CLIENT_ERROR in a later phase": (
+        [
+            {"phaseType": "QUEUED", "phaseStatus": "SUCCEEDED"},
+            {"phaseType": "DOWNLOAD_SOURCE", "phaseStatus": "CLIENT_ERROR"},
+        ],
+        0,
+    ),
+    "no QUEUED phase": ([{"phaseType": "SUBMITTED", "phaseStatus": "SUCCEEDED"}], 0),
+    "no phases": ([], 0),
+}
+
+
+@pytest.mark.parametrize("resource", sorted(_BUILD_SCRIPTS))
+@pytest.mark.parametrize("shape", sorted(_PHASES))
+def test_the_never_ran_query_reads_either_field(resource: str, shape: str):
+    """The query counts a QUEUED phase whose ``phaseStatus`` is CLIENT_ERROR, as
+    the API returns it, or that has a CLIENT_ERROR context, as its reference
+    documents it, and nothing in a later phase."""
+    import jmespath
+
+    header = f'resource "null_resource" "{resource}"'
+    script = _heredoc(_code(_BUILD_SCRIPTS[resource].read_text()), header, "command")
+    (query,) = re.findall(r'--query "(length\(builds\[0\]\.phases[^"]*)"', script)
+    phases, expected = _PHASES[shape]
+    assert jmespath.search(query, {"builds": [{"phases": phases}]}) == expected
 
 
 # =============================================================================

@@ -274,11 +274,11 @@ resource "null_resource" "trigger_build" {
               # A build that failed in QUEUED never ran: CodeBuild could not use
               # its service role yet, as a role or policy created moments ago
               # can take a minute to apply. Starting it again is safe.
-              QUEUED=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              NEVER_RAN=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                 --region ${data.aws_region.current.id} \
-                --query 'builds[0].phases[?phaseType==`QUEUED`].phaseStatus | [0]' \
-                --output text || echo "")
-              if [ "$STATUS" = "FAILED" ] && [ "$QUEUED" = "CLIENT_ERROR" ] && [ "$STARTS" -lt 6 ]; then
+                --query "length(builds[0].phases[?phaseType=='QUEUED' && (phaseStatus=='CLIENT_ERROR' || contexts[?statusCode=='CLIENT_ERROR'])])" \
+                --output text || echo 0)
+              if [ "$STATUS" = "FAILED" ] && [ "$NEVER_RAN" = "1" ] && [ "$STARTS" -lt 6 ]; then
                 echo "Build $BUILD_ID could not start (CLIENT_ERROR while queued, usually IAM permissions not yet applied); starting it again in $((STARTS * 20)) s" >&2
                 sleep $((STARTS * 20)); STARTS=$((STARTS + 1)); continue 2
               fi
@@ -548,11 +548,11 @@ resource "null_resource" "build_zip_package" {
               # A build that failed in QUEUED never ran: CodeBuild could not use
               # its service role yet, as a role or policy created moments ago
               # can take a minute to apply. Starting it again is safe.
-              QUEUED=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              NEVER_RAN=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                 --region ${data.aws_region.current.id} \
-                --query 'builds[0].phases[?phaseType==`QUEUED`].phaseStatus | [0]' \
-                --output text || echo "")
-              if [ "$STATUS" = "FAILED" ] && [ "$QUEUED" = "CLIENT_ERROR" ] && [ "$STARTS" -lt 6 ]; then
+                --query "length(builds[0].phases[?phaseType=='QUEUED' && (phaseStatus=='CLIENT_ERROR' || contexts[?statusCode=='CLIENT_ERROR'])])" \
+                --output text || echo 0)
+              if [ "$STATUS" = "FAILED" ] && [ "$NEVER_RAN" = "1" ] && [ "$STARTS" -lt 6 ]; then
                 echo "Build $BUILD_ID could not start (CLIENT_ERROR while queued, usually IAM permissions not yet applied); starting it again in $((STARTS * 20)) s" >&2
                 sleep $((STARTS * 20)); STARTS=$((STARTS + 1)); continue 2
               fi
