@@ -38,18 +38,36 @@ def mask_exception_text(exc: BaseException) -> BaseException:
     The Lambda Python runtime prints an exception that escapes a handler
     itself, not through ``logging``, so the masking record factory never sees
     it; it prints ``str(exc)`` and the stack frames, and returns the same text
-    in the error response and the DLQ's ``ErrorMessage``. Masking the
-    arguments in place keeps the exception's type, so retry decisions and
-    ``isinstance`` checks hold, and its traceback. Never raises.
+    in the error response, the DLQ's ``ErrorMessage`` and the X-Ray fault.
+    Masking the arguments in place keeps the exception's type, so retry
+    decisions and ``isinstance`` checks hold, and its traceback. When that
+    cannot mask the text, because the text does not come from the arguments
+    or the masked arguments no longer print, the arguments are restored and a
+    ``MaskedHandlerError`` naming the type stands in. An exception that cannot
+    print at all is returned as it is. Never raises.
     """
     try:
         text = str(exc)
+    except Exception:  # noqa: BLE001 - nothing to mask in a text that never prints
+        return exc
+    try:
         masked = mask_phone(text)
-        if masked == text:
+        original = exc.args
+        try:
+            masked_args: tuple | None = tuple(_masked_arg(arg) for arg in original)
+        except Exception:  # noqa: BLE001 - an argument that cannot print
+            masked_args = None
+        if masked == text and masked_args == original:
             return exc
-        exc.args = tuple(_masked_arg(arg) for arg in exc.args)
-        if mask_phone(str(exc)) == str(exc):
-            return exc
+        if masked_args is not None:
+            try:
+                exc.args = masked_args
+                after = str(exc)
+                if mask_phone(after) == after:
+                    return exc
+            except Exception:  # noqa: BLE001 - its text no longer prints
+                pass
+            exc.args = original
         replacement = MaskedHandlerError(f"{type(exc).__name__}: {masked}")
         replacement.__traceback__ = exc.__traceback__
         replacement.__suppress_context__ = True

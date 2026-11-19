@@ -13,14 +13,17 @@ the same exception, so its type, ``isinstance`` checks and traceback hold.
 
 from __future__ import annotations
 
-import asyncio
 import traceback
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
 
-from socialagent.handlers.common import mask_exception_text, run_handler
+from socialagent.handlers.common import (
+    MaskedHandlerError,
+    mask_exception_text,
+    run_handler,
+)
 from socialagent.handlers.event import make_event_handler
 from socialagent.handlers.notification import make_notification_handler
 from socialagent.handlers.scheduler_event import make_scheduler_handler
@@ -87,11 +90,12 @@ def test_an_error_whose_text_ignores_its_arguments_is_replaced_masked():
         def __str__(self) -> str:
             return f"cannot reach {PHONE}"
 
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(MaskedHandlerError) as raised:
         run_handler(_raise(Opaque()))
     assert DIGITS not in str(raised.value)
     assert "Opaque: cannot reach +...0100" in str(raised.value)
     assert raised.value.__suppress_context__
+    assert traceback.extract_tb(raised.value.__traceback__)[-1].name == "coro"
 
 
 def test_masking_never_raises_from_an_unprintable_error():
@@ -168,10 +172,65 @@ def test_every_lambda_entry_point_goes_through_run_handler():
     from pathlib import Path
 
     handlers = Path(__file__).parent.parent / "src" / "socialagent" / "handlers"
-    direct = [
-        p.name
+    entry_points = {
+        p.name: p.read_text()
         for p in handlers.glob("*.py")
-        if "def sync_handler" in p.read_text() and "asyncio.run(" in p.read_text()
-    ]
-    assert direct == []
-    assert asyncio  # the module is imported for the coroutine helpers above
+        if "def sync_handler" in p.read_text()
+    }
+    assert set(entry_points) >= {
+        "webhook.py",
+        "notification.py",
+        "scheduler_event.py",
+        "event.py",
+    }
+    assert [name for name, text in entry_points.items() if "asyncio.run(" in text] == []
+
+
+# ── shapes whose text and arguments disagree ─────────────────────────────────
+
+SPACED = "+52 55 5555 0100"
+
+
+def test_a_key_error_with_a_spaced_number_is_masked():
+    """``str`` of a KeyError quotes its argument, so the joined text is not
+    phone-shaped and looks unchanged under ``mask_phone``; the argument is."""
+    with pytest.raises(KeyError) as raised:
+        run_handler(_raise(KeyError(SPACED)))
+    assert str(raised.value) == "'+...0100'"
+
+
+def test_a_spaced_number_among_several_arguments_is_masked():
+    with pytest.raises(Exception) as raised:
+        run_handler(_raise(Exception(SPACED, "x")))
+    assert type(raised.value) is Exception
+    assert "5555" not in str(raised.value)
+
+
+def test_an_argument_that_cannot_print_falls_back_masked():
+    class Unprintable:
+        def __str__(self) -> str:
+            raise RuntimeError("no str")
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque(Unprintable())))
+    assert str(raised.value) == "Opaque: cannot reach +...0100"
+
+
+def test_a_text_that_formats_its_argument_by_type_is_not_left_unprintable():
+    """Masking a number argument into a string must not break its ``__str__``:
+    the arguments are restored and the error escapes as a printable fallback."""
+
+    class Coded(Exception):
+        def __str__(self) -> str:
+            return f"no route to {self.args[0]:d}"
+
+    exc = Coded(525555550100)
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(exc))
+    assert str(raised.value) == "Coded: no route to ...0100"
+    assert exc.args == (525555550100,)
+    assert str(exc) == "no route to 525555550100"
