@@ -3032,7 +3032,7 @@ def test_runtime_log_group_steps_tolerate_only_a_group_that_exists(
     header, create_error, retention_exit, exit_code = _RUNTIME_LOG_STEPS[case]
     tf = _code(MONITORING.read_text())
     script = _heredoc(tf, header, "command")
-    group = "/aws/bedrock-agentcore/runtimes/dev_bot_runtime-AbCdE12345-DEFAULT"
+    group = "/aws/bedrock-agentcore/runtimes/dev_bot_runtime-AbCdE12345-DEFAULT"  # pragma: allowlist secret
     days = _assigned(_block(tf, "locals {"), "log_retention_days")
     values = {
         "var.runtime_log_group_name": group,
@@ -3170,7 +3170,7 @@ def test_runtime_log_group_masks_what_the_lambda_groups_mask_and_more(tmp_path: 
         "project_name": "bot",
         "environment": "dev",
         "lambda_function_names": '["dev-bot-webhook"]',
-        "runtime_log_group_name": "/aws/bedrock-agentcore/runtimes/dev_bot_runtime-AbCdE12345-DEFAULT",
+        "runtime_log_group_name": "/aws/bedrock-agentcore/runtimes/dev_bot_runtime-AbCdE12345-DEFAULT",  # pragma: allowlist secret
         "pii_phone_number_countries": '["US", "GB"]',
     }
     managed, lambda_policy, runtime_policy = [
