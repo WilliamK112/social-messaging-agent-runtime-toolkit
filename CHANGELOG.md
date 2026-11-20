@@ -6,6 +6,7 @@ All notable changes to SMART, the Social Messaging Agent Runtime Toolkit, are re
 
 ### Changed
 - The Release workflow also publishes a patch release tagged on its line's release branch (`v2026.11.1` on `release/2026.11`), which has the same protection as `main`; a tag on any other branch, or on another line's release branch, is still refused (#140).
+- The per-user schedule cap fails closed: when the agent runtime cannot list a user's schedules to count them, `scheduler.schedule` raises `ScheduleLimitExceeded` and creates nothing, instead of counting 0 and creating the schedule (#94). `docs/events-scheduling.md` now describes the cap. Existing projects pick this up with `socialagent runtime update`.
 
 ### Fixed
 - `state.get` returns `None` for an item whose `ttl` has passed, instead of the old value until DynamoDB's background sweep deletes it, which can take days. Agent-side `list_keys` and `list_items` skip such an item too, so they agree with `get`; `delete_prefix` still deletes it. `claim_once` (agent and Lambda side) and `compare_and_set` treat such an item as absent too: an expired `claim#` marker or value no longer refuses a new claim or `expected=None`, and an expired value never matches `expected`. The Lambda-side fix reaches a stack with the next deploy; the agent-side fix reaches an existing project only when its vendored `socialagent_runtime/` is replaced (`socialagent runtime update`) (#56).
