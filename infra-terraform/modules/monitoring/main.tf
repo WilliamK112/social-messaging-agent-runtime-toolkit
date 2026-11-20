@@ -65,19 +65,28 @@ locals {
   )
 
   # What the managed identifiers miss in the runtime's log group, each a way the
-  # user's full number appears there: in E.164 form (the managed PhoneNumber
-  # identifiers cover a few countries, and none covers +52), and inside the ids
-  # SMART builds from it, the conversation's session id, a scheduled task's
-  # session id (scheduled-task-<digits>-scheduled-<schedule id>) and the
-  # schedule id scheduler.schedule generates (<digits>-<operation>-<hash>),
-  # which personal-assistant's tools return to the model. A custom identifier's
-  # regex may not contain ( or ), so a match cannot be cut to the digits and
-  # the whole id is masked. CloudWatch Logs allows 10 per policy, a name of
-  # letters, digits, _ and - up to 128 characters that is not a managed
+  # user's full number appears there: with a leading + in any common format (the
+  # managed PhoneNumber identifiers cover a few countries, and none covers +52),
+  # as a national number written in groups (two or three digits, then three or
+  # four, then four), and inside the ids SMART builds from it, the
+  # conversation's session id, a scheduled task's session id
+  # (scheduled-task-<digits>-scheduled-<schedule id>) and the schedule id
+  # scheduler.schedule generates (<digits>-<operation>-<hash>), which
+  # personal-assistant's tools return to the model. A number's groups may be
+  # separated by up to two characters, any but a letter, a digit, a backslash or
+  # a double quote, so spaces, dots, hyphens and parentheses match and a JSON
+  # string's escapes and quotes stay; a national number's first separator
+  # excludes a comma too, so a list of values does not read as one, and its last
+  # is a space, a dot or a hyphen. A bare run of digits without + is
+  # left alone: it cannot be told from a timestamp or an id. A custom
+  # identifier's regex may not contain ( or ), so a match cannot be cut to the
+  # digits and the whole id is masked. CloudWatch Logs allows 10 per policy, a
+  # name of letters, digits, _ and - up to 128 characters that is not a managed
   # identifier's, and a regex of up to 200 characters drawn from a fixed set:
   # https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL-custom-data-identifiers.html
   runtime_custom_data_identifiers = {
-    E164PhoneNumber        = "\\+[1-9]\\d{7,14}"
+    E164PhoneNumber        = "\\+[1-9][0-9]{0,3}[^0-9A-Za-z\\\\\"]{0,2}[0-9]{1,4}[^0-9A-Za-z\\\\\"]{0,2}[0-9]{2,4}[^0-9A-Za-z\\\\\"]{0,2}[0-9]{2,4}[^0-9A-Za-z\\\\\"]?[0-9]{0,4}"
+    NationalPhoneNumber    = "\\b[0-9]{2,3}[^0-9A-Za-z\\\\\",]{1,2}[0-9]{3,4}[ .-][0-9]{4}\\b"
     ConversationSessionId  = "whatsapp-session-conversation-\\d+"
     ScheduledTaskSessionId = "scheduled-task-\\d+[A-Za-z0-9_-]*"
     GeneratedScheduleId    = "\\d{7,15}-[a-z][a-z_-]*-[0-9a-f]{8}"

@@ -735,17 +735,22 @@ def _runtime_log_group_identifiers() -> dict[str, str]:
 
 
 def _masked_by_the_runtime_log_group(text: str) -> str:
-    """*text* as those identifiers leave it: each match in asterisks."""
+    """*text* as those identifiers leave it: every character any of them
+    matches in the original text, in asterisks (CloudWatch Logs applies them
+    together, so their order does not matter)."""
+    hit = [False] * len(text)
     for regex in _runtime_log_group_identifiers().values():
-        text = re.sub(regex, lambda match: "*" * len(match.group()), text)
-    return text
+        for match in re.finditer(regex, text):
+            hit[match.start() : match.end()] = [True] * (match.end() - match.start())
+    return "".join("*" if masked else char for char, masked in zip(text, hit))
 
 
 def test_the_runtime_log_group_masks_the_number_wherever_the_runtime_writes_it():
-    """In E.164 form, for any country, and in each id SMART builds from the
-    number: the conversation's session id, a scheduled task's, and the schedule
-    id the runtime generates, which personal-assistant's tools return to the
-    model and so reach Strands' record of the turn.
+    """With a leading +, for any country, as a national number written in
+    groups, and in each id SMART builds from the number: the conversation's
+    session id, a scheduled task's, and the schedule id the runtime generates,
+    which personal-assistant's tools return to the model and so reach Strands'
+    record of the turn.
 
     The ids are built by the code that builds them, so an id format the
     identifiers miss fails here. Each identifier matches the whole of the id it
@@ -764,8 +769,10 @@ def test_the_runtime_log_group_masks_the_number_wherever_the_runtime_writes_it()
     task_session = template.group(1).format(
         digits=actor_id_for_phone(PHONE), schedule_id=schedule_id
     )
+    national = f"{DIGITS[:2]} {DIGITS[2:6]} {DIGITS[6:]}"
     whole = {
         "E164PhoneNumber": PHONE,
+        "NationalPhoneNumber": national,
         "ConversationSessionId": session_id_for_phone(PHONE),
         "ScheduledTaskSessionId": task_session,
         "GeneratedScheduleId": schedule_id,
@@ -778,6 +785,7 @@ def test_the_runtime_log_group_masks_the_number_wherever_the_runtime_writes_it()
     texts = {
         "a Mexican number": f"Text me at {PHONE} tomorrow",
         "a US number": f"or at +1{DIGITS}",
+        "a national number": f"or at {national}",
         "the conversation's session id": json.dumps(
             {"session.id": session_id_for_phone(PHONE)}
         ),
@@ -793,28 +801,130 @@ def test_the_runtime_log_group_masks_the_number_wherever_the_runtime_writes_it()
 
 
 @pytest.mark.parametrize(
+    "number",
+    [
+        "+525555550100",
+        "+52 55 5555 0100",
+        "+52-55-5555-0100",
+        "+52.55.5555.0100",
+        "+52 1 55 5555 0100",
+        "+52 (55) 5555 0100",
+        "+52 (55) 5555-0100",
+        "+15555550100",
+        "+1 555 555 0100",
+        "+1 555-555-0100",
+        "+1 (555) 555-0100",
+        "+44 20 7946 0958",
+        "+55 11 95555-0100",
+        "55 5555 0100",
+        "55-5555-0100",
+        "(55) 5555-0100",
+        "555-555-0100",
+        "555.555.0100",
+        "(555) 555-0100",
+    ],
+)
+def test_the_runtime_log_group_masks_a_number_in_any_common_format(number: str):
+    """With a leading +, for any country, with spaces, dots, hyphens or
+    parentheses between the groups, and a national number written in groups.
+
+    The words around it stay. A separator after a number with a + can be masked
+    with it, and a national number in parentheses keeps its ``(``: the
+    identifier starts at the first digit.
+    """
+    masked = _masked_by_the_runtime_log_group(f"Call me at {number} tomorrow")
+    assert re.fullmatch(r"Call me at \(?\*+ ?tomorrow", masked), masked
+
+
+def test_the_runtime_log_group_keeps_a_json_strings_escapes_and_quotes():
+    """No identifier takes a backslash or a double quote between or after a
+    number's groups, so a record that quotes one, nested in another or not,
+    still parses, the number masked and the text around it as it was."""
+    number = "+52 55 5555 0100"
+    national = "55 5555 0100"
+    record = {
+        "text": f"Save this contact: Ana, {number}\n\nIf you want",
+        "phone": PHONE,
+        "national": national,
+    }
+    masked = {
+        "text": f"Save this contact: Ana, {'*' * len(number)}\n\nIf you want",
+        "phone": "*" * len(PHONE),
+        "national": "*" * len(national),
+    }
+    flat = _masked_by_the_runtime_log_group(json.dumps(record))
+    assert json.loads(flat) == masked, flat
+    nested = _masked_by_the_runtime_log_group(json.dumps({"body": json.dumps(record)}))
+    assert json.loads(json.loads(nested)["body"]) == masked, nested
+
+
+def test_the_runtime_log_group_leaves_a_bare_run_of_digits_readable():
+    """A documented residual: without a + or a separator, a number cannot be
+    told from an epoch or an id, so no identifier matches it."""
+    text = f"Call me at {DIGITS} tomorrow"
+    assert _masked_by_the_runtime_log_group(text) == text
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "+...0100",
         "whatsapp-session-conversation-...0100",
         "2026-11-19T08:00:00.123Z",
+        "2026-11-20T18:42:57+00:00",
+        "2026-11-20 18:41:25,993",
+        "+05:30",
+        "+1 hour",
         '"timeUnixNano": 1763560000123456789',
+        "epoch 1795200176",
         "123e4567-e89b-12d3-a456-426614174000",
+        "500940cc-5b76-4284-9410-4532eaad47d0",
         "1-6745a1b2-0123456789abcdef01234567",
+        "0000001795200177015#a26b6aea",
+        "arn:aws:sns:us-east-1:123456789012:dev",
         '"inputTokens": 1234, "outputTokens": 56',
+        "[0.015, 3567.7196, 132, 760.2518]",
+        "Duration: 14.04 ms",
+        "version 1.57.0",
+        "10.0.12.34",
+        "$0.001",
+        "1e+125",
+        "20.11.2026",
+        "20-11-2026",
+        "12 345 67890",
+        "+00:00 12 34",
     ],
     ids=[
         "masked-phone",
         "masked-session",
         "timestamp",
+        "timestamp-with-offset",
+        "log-timestamp",
+        "utc-offset",
+        "relative-time",
         "epoch-nanos",
+        "epoch",
         "uuid",
+        "uuid-with-digit-groups",
         "trace-id",
+        "event-id",
+        "arn",
         "token-counts",
+        "metric-list",
+        "duration",
+        "version",
+        "ip-address",
+        "cost",
+        "float-exponent",
+        "date-dotted",
+        "date-hyphenated",
+        "digit-groups-too-long",
+        "offset-then-digits",
     ],
 )
 def test_the_runtime_log_group_leaves_other_values_readable(text: str):
-    """A number ``mask_phone`` already cut, times, ids and counts stay as they are."""
+    """A number ``mask_phone`` already cut, times, ids, counts and other
+    numbers stay as they are."""
     assert _masked_by_the_runtime_log_group(text) == text
 
 

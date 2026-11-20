@@ -157,7 +157,7 @@ variable "enable_state_table" {
 }
 
 variable "enable_pii_log_protection" {
-  description = "Enable CloudWatch Logs data protection to automatically mask PII (phone numbers, names, emails) in the Lambda log groups and the agent runtime's, where it also masks E.164 numbers, the session ids that hold one and the schedule ids the runtime generates from one."
+  description = "Enable CloudWatch Logs data protection to automatically mask PII (phone numbers, names, emails) in the Lambda log groups and the agent runtime's, where it also masks numbers with a leading + in the usual formats, national numbers written in groups, the session ids that hold one and the schedule ids the runtime generates from one."
   type        = bool
   default     = true
 }
