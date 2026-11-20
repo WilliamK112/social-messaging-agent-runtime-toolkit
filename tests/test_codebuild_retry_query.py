@@ -7,8 +7,8 @@ On a stack's first deploy CodeBuild can try a build before IAM applies its new
 service role's policy, and fails it in ``QUEUED`` having run nothing; the build
 provisioners start such a build again. The query that tells such a build from
 one that ran is evaluated here with JMESPath, as the AWS CLI evaluates it. It
-lives apart from ``test_terraform_hardening.py``, whose CI job installs only
-``pytest`` and ``pyyaml``. The real API reports ``phaseStatus: CLIENT_ERROR``
+lives apart from ``test_terraform_hardening.py``, whose imports
+``tests/test_ci_terraform_job.py`` limits to ``pytest`` and ``yaml``. The real API reports ``phaseStatus: CLIENT_ERROR``
 with an ``ACCESS_DENIED`` context; its reference documents ``CLIENT_ERROR`` as
 a context ``statusCode`` instead, so the query reads either.
 """
