@@ -349,3 +349,18 @@ async def test_a_marker_with_a_non_numeric_ttl_still_refuses(
     _store_with_ttl(table, "claim#evt", ttl)
     assert await agent.claim_once(PHONE, "evt") is False
     assert await lambda_state.claim_once(PHONE, "evt") is False
+
+
+@pytest.mark.parametrize("ttl", ["1", True], ids=["string", "boolean"])
+async def test_cas_expected_none_keeps_a_value_with_a_non_numeric_ttl(
+    table, agent, ttl
+):
+    """The condition refuses, and the re-read reports the stored value as live:
+    nothing is written and the item stays as it was."""
+    _store_with_ttl(table, "k", ttl)
+
+    assert await agent.compare_and_set(PHONE, "k", None, lambda: "new") == "v"
+
+    stored = _stored(table, "k")
+    assert json.loads(stored["data"]) == "v"
+    assert stored["ttl"] == ttl
