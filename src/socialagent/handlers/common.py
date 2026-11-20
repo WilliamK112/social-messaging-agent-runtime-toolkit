@@ -53,27 +53,38 @@ def mask_exception_text(exc: BaseException) -> BaseException:
     try:
         masked = mask_phone(text)
         original = exc.args
-        try:
-            masked_args: tuple | None = tuple(_masked_arg(arg) for arg in original)
-        except Exception:  # noqa: BLE001 - an argument that cannot print
-            masked_args = None
+        masked_args = tuple(_masked_arg_or_itself(arg) for arg in original)
         if masked == text and masked_args == original:
             return exc
-        if masked_args is not None:
-            try:
-                exc.args = masked_args
-                after = str(exc)
-                if mask_phone(after) == after:
-                    return exc
-            except Exception:  # noqa: BLE001 - its text no longer prints
-                pass
+        # The fallback's text starts from the masked arguments where they print,
+        # since mask_phone cuts a spaced number as an argument, not in free text.
+        fallback = masked
+        try:
+            exc.args = masked_args
+            after = str(exc)
+            if mask_phone(after) == after:
+                return exc
+            fallback = mask_phone(after)
+        except Exception:  # noqa: BLE001 - read-only args, or its text no longer prints
+            pass
+        try:
             exc.args = original
-        replacement = MaskedHandlerError(f"{type(exc).__name__}: {masked}")
+        except Exception:  # noqa: BLE001 - args that cannot be assigned were never changed
+            pass
+        replacement = MaskedHandlerError(f"{type(exc).__name__}: {fallback}")
         replacement.__traceback__ = exc.__traceback__
         replacement.__suppress_context__ = True
         return replacement
     except Exception:  # noqa: BLE001 - masking must never replace the real error
         return exc
+
+
+def _masked_arg_or_itself(arg: Any) -> Any:
+    """``arg`` masked, or ``arg`` as it is when it cannot print."""
+    try:
+        return _masked_arg(arg)
+    except Exception:  # noqa: BLE001 - one unprintable argument does not stop the rest
+        return arg
 
 
 def _masked_arg(arg: Any) -> Any:

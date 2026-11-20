@@ -234,3 +234,60 @@ def test_a_text_that_formats_its_argument_by_type_is_not_left_unprintable():
     assert str(raised.value) == "Coded: no route to ...0100"
     assert exc.args == (525555550100,)
     assert str(exc) == "no route to 525555550100"
+
+
+class _Unprintable:
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:  # the default repr's address can hold a digit run
+        return "<unprintable>"
+
+
+def test_an_unprintable_argument_does_not_stop_the_others_being_masked():
+    """Each argument is masked on its own; one that cannot print stays as it is."""
+    exc = Exception(SPACED, _Unprintable())
+    with pytest.raises(Exception) as raised:
+        run_handler(_raise(exc))
+    assert raised.value is exc
+    assert type(raised.value) is Exception
+    assert raised.value.args[0] == "+...0100"
+    assert "5555" not in str(raised.value)
+
+
+def test_an_error_with_no_number_and_an_unprintable_argument_keeps_its_type():
+    exc = ValueError("no number here", _Unprintable())
+    with pytest.raises(ValueError) as raised:
+        run_handler(_raise(exc))
+    assert raised.value is exc
+    assert raised.value.args[0] == "no number here"
+
+
+def test_an_error_whose_args_cannot_be_assigned_falls_back_masked():
+    """A read-only ``args`` fails the assignment and the restore alike; the
+    error must still escape masked, not with the full number."""
+
+    class ReadOnly(Exception):
+        @property
+        def args(self):
+            return (f"for {PHONE}",)
+
+        def __str__(self) -> str:
+            return self.args[0]
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(ReadOnly()))
+    assert str(raised.value) == "ReadOnly: for +...0100"
+
+
+def test_a_fallback_keeps_a_spaced_number_masked():
+    """A text that holds other digits fails the re-check; the fallback must be
+    built from the masked argument, since free text keeps a spaced number."""
+
+    class Routed(Exception):
+        def __str__(self) -> str:
+            return f"{self.args[0]} via node 123456"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Routed(SPACED)))
+    assert str(raised.value) == "Routed: +...0100 via node ...3456"
