@@ -27,6 +27,9 @@ except ImportError:
     from phone import mask_phone  # type: ignore[no-redef]
 
 _EXCEPTION_EVENT = "exception"
+# Marks the three wrappers, so a second call finds them. ``__wrapped__`` would
+# not do: another library's ``functools.wraps`` or ``wrapt`` wrapper has it too.
+_MASKING_MARKER = "_socialagent_masks_phone_numbers"
 
 
 def _masked_attributes(attributes: Any) -> Any:
@@ -69,15 +72,16 @@ def install_span_masking() -> None:
       hand; other events are left as they are.
 
     The text is masked before the span ends, so every exporter and processor
-    sees only the masked form. Does nothing without the OpenTelemetry SDK, and
-    calling it again does nothing.
+    sees only the masked form. A wrapper another library put on these methods
+    first keeps running beneath the masking. Does nothing without the
+    OpenTelemetry SDK, and calling it again does nothing.
     """
     try:
         from opentelemetry.sdk.trace import Span
         from opentelemetry.trace import Status
     except ImportError:
         return
-    if hasattr(Span.record_exception, "__wrapped__"):
+    if getattr(Span.record_exception, _MASKING_MARKER, False):
         return
 
     sdk_record_exception = Span.record_exception
@@ -126,6 +130,8 @@ def install_span_masking() -> None:
                 pass
         return sdk_add_event(self, name, attributes, timestamp)
 
+    for wrapper in (record_exception, set_status, add_event):
+        setattr(wrapper, _MASKING_MARKER, True)
     Span.record_exception = record_exception
     Span.set_status = set_status
     Span.add_event = add_event

@@ -171,5 +171,44 @@ def test_without_opentelemetry_installing_does_nothing(unpatched, monkeypatch):
 def test_importing_the_runtime_installs_the_span_masking():
     import socialagent_runtime  # noqa: F401
 
-    assert hasattr(Span.record_exception, "__wrapped__")
-    assert hasattr(Span.set_status, "__wrapped__")
+    for name in ("record_exception", "set_status", "add_event"):
+        assert getattr(getattr(Span, name), _span_masking._MASKING_MARKER, False)
+
+
+def test_a_wrapper_another_library_installed_first_does_not_stop_the_masking(
+    unpatched, spans, monkeypatch
+):
+    """Another tracing library's ``functools.wraps`` wrapper also carries
+    ``__wrapped__``, so only a marker of the SDK's own masking may tell that it
+    is installed; the other wrapper keeps running under it."""
+    import functools
+
+    calls = []
+    for name in ("record_exception", "set_status", "add_event"):
+        inner = getattr(Span, name)
+
+        def make(inner, name):
+            @functools.wraps(inner)
+            def passthrough(self, *args, **kwargs):
+                calls.append(name)
+                return inner(self, *args, **kwargs)
+
+            return passthrough
+
+        monkeypatch.setattr(Span, name, make(inner, name))
+
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with pytest.raises(ValueError):
+        with tracer.start_as_current_span("tool"):
+            raise ValueError(f"recipient {PHONE} is not on WhatsApp")
+
+    (span,) = exporter.get_finished_spans()
+    assert _exception_event(span)["exception.message"] == (
+        "recipient +...0100 is not on WhatsApp"
+    )
+    assert (
+        span.status.description == "ValueError: recipient +...0100 is not on WhatsApp"
+    )
+    assert {"record_exception", "set_status", "add_event"} <= set(calls)
+    _no_number(exporter)
