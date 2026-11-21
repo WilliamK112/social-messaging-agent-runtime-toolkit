@@ -141,8 +141,59 @@ def test_an_unprintable_exception_is_still_recorded(unpatched, spans):
         span.record_exception(Unprintable())
 
     event = _exception_event(exporter.get_finished_spans()[0])
-    assert event["exception.type"].endswith("Unprintable")
+    assert event["exception.type"] == (
+        f"{Unprintable.__module__}.{Unprintable.__qualname__}"
+    )
     assert event["exception.message"] == "<unprintable exception>"
+    _no_number(exporter)
+
+
+def test_the_fallback_names_an_exception_type_as_the_sdk_does(unpatched, spans):
+    """``module.qualname``, or the bare name for a builtin, as the SDK writes it."""
+
+    class CannotPrint:
+        def __str__(self) -> str:
+            raise RuntimeError(f"cannot print {PHONE}")
+
+    class ToolError(Exception):
+        pass
+
+    tracer, exporter = spans
+    with tracer.start_as_current_span("sdk") as span:
+        span.record_exception(ValueError("fine"))
+        span.record_exception(ToolError("fine"))
+    _span_masking.install_span_masking()
+    with tracer.start_as_current_span("fallback") as span:
+        span.record_exception(ValueError(CannotPrint()))
+        span.record_exception(ToolError(CannotPrint()))
+
+    sdk_span, fallback_span = exporter.get_finished_spans()
+    assert [dict(e.attributes)["exception.type"] for e in fallback_span.events] == [
+        dict(e.attributes)["exception.type"] for e in sdk_span.events
+    ]
+    _no_number(exporter)
+
+
+def test_an_exception_type_without_a_module_is_still_recorded(unpatched, spans):
+    """A class whose ``__module__`` cannot be read, as with some C extension
+    types, makes the SDK raise; the fallback records it under its bare name."""
+
+    class NoModule(type):
+        @property
+        def __module__(cls):
+            raise AttributeError("__module__")
+
+    class ExtError(Exception, metaclass=NoModule):
+        pass
+
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(ExtError(f"send failed for {PHONE}"))
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert event["exception.type"] == ExtError.__qualname__
+    assert event["exception.message"] == "send failed for +...0100"
     _no_number(exporter)
 
 

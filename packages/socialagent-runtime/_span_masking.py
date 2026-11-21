@@ -56,6 +56,17 @@ def _exception_attributes(exception: BaseException) -> dict[str, str]:
     return {"exception.message": message, "exception.stacktrace": stacktrace}
 
 
+def _exception_type(exception: BaseException) -> str:
+    """The ``exception.type`` the SDK records: ``module.qualname``, or the bare
+    qualname for a builtin or a class whose module cannot be read."""
+    qualname = type(exception).__qualname__
+    try:
+        module = type(exception).__module__
+        return f"{module}.{qualname}" if module and module != "builtins" else qualname
+    except Exception:  # noqa: BLE001 - recording an exception must never raise
+        return qualname
+
+
 def install_span_masking() -> None:
     """Mask the exception text OpenTelemetry's SDK records on a span.
 
@@ -103,7 +114,7 @@ def install_span_masking() -> None:
                 self,
                 _EXCEPTION_EVENT,
                 {
-                    "exception.type": type(exception).__qualname__,
+                    "exception.type": _exception_type(exception),
                     "exception.escaped": str(escaped),
                     **masked,
                 },
