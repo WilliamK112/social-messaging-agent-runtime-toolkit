@@ -291,3 +291,29 @@ def test_a_fallback_keeps_a_spaced_number_masked():
     with pytest.raises(MaskedHandlerError) as raised:
         run_handler(_raise(Routed(SPACED)))
     assert str(raised.value) == "Routed: +...0100 via node ...3456"
+
+
+# ── a spaced number must not survive through text the arguments feed ─────────
+
+
+def test_a_spaced_number_in_a_text_that_formats_an_argument_by_type_is_masked():
+    """The masked number argument no longer formats with ``:d``, so the error
+    falls back; the fallback's text must carry the spaced number masked."""
+
+    class Coded3(Exception):
+        def __str__(self) -> str:
+            return f"{self.args[0]} code {self.args[1]:d}"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Coded3(SPACED, 525555550100)))
+    assert str(raised.value) == "Coded3: +...0100 code ...0100"
+
+
+def test_a_spaced_number_in_an_exception_group_message_is_masked():
+    """``ExceptionGroup`` prints its ``message`` attribute, not ``args``, so
+    masking the arguments alone leaves the spaced number whole in its text."""
+    group = ExceptionGroup(SPACED, [ValueError("x")])
+    with pytest.raises(Exception) as raised:
+        run_handler(_raise(group))
+    assert "5555" not in str(raised.value)
+    assert "+...0100" in str(raised.value)
