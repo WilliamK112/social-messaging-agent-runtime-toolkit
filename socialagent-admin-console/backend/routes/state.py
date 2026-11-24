@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """State routes: per-stack state, delete key, cross-stack list."""
-
 from __future__ import annotations
 
 import json
@@ -14,10 +13,7 @@ import boto3
 from shared.auth import require_group
 from shared.aws import REGION
 from shared.http import error_response as _error, json_response as _json
-from shared.registry import (
-    get_registry as _get_registry,
-    get_all_registries as _get_all_registries,
-)
+from shared.registry import get_registry as _get_registry, get_all_registries as _get_all_registries
 from shared.resolver import app, from_legacy
 
 # SMART state tables are always named "<project>-<env>-state". Validate the
@@ -109,14 +105,12 @@ def handle_get_state(params, _body):
                     value = json.loads(raw) if isinstance(raw, str) else raw
                 except (json.JSONDecodeError, TypeError):
                     value = raw
-                result.append(
-                    {
-                        "phone": item.get("pk", ""),
-                        "key": item.get("sk", ""),
-                        "value": value,
-                        "ttl": _state_ttl(item),
-                    }
-                )
+                result.append({
+                    "phone": item.get("pk", ""),
+                    "key": item.get("sk", ""),
+                    "value": value,
+                    "ttl": _state_ttl(item),
+                })
             lek = resp.get("LastEvaluatedKey")
             if not lek:
                 break
@@ -150,15 +144,13 @@ def handle_list_all_state(_params, _body):
                         value = json.loads(raw) if isinstance(raw, str) else raw
                     except (json.JSONDecodeError, TypeError):
                         value = raw
-                    all_entries.append(
-                        {
-                            "phone": item.get("pk", ""),
-                            "key": item.get("sk", ""),
-                            "value": value,
-                            "ttl": _state_ttl(item),
-                            "stack": sid,
-                        }
-                    )
+                    all_entries.append({
+                        "phone": item.get("pk", ""),
+                        "key": item.get("sk", ""),
+                        "value": value,
+                        "ttl": _state_ttl(item),
+                        "stack": sid,
+                    })
                 lek = resp.get("LastEvaluatedKey")
                 if not lek or len(all_entries) >= 2000:
                     break
@@ -166,6 +158,7 @@ def handle_list_all_state(_params, _body):
         except Exception:
             continue
     return _json(200, all_entries)
+
 
 
 @app.get("/api/stacks/<id>/state")
@@ -179,7 +172,6 @@ def get_state(id: str):
 def delete_state_key(id: str):
     """Delete a state key with phone+key in the JSON body (safe for + and #)."""
     from shared.resolver import current_body
-
     body = current_body()
     return from_legacy(handle_delete_state_key({"id": id}, body))
 
