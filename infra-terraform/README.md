@@ -25,7 +25,7 @@ Deploy the complete SMART stack with `socialagent deploy`, which runs this Terra
 ## Prerequisites
 
 - Terraform >= 1.7.0
-- AWS CLI on `PATH`, configured with appropriate permissions: Terraform's provisioners call it to start the CodeBuild builds and wait for them
+- AWS CLI on `PATH`, configured with appropriate permissions: Terraform's provisioners call it to start the CodeBuild builds and wait for them, and to create the agent runtime's log group if AgentCore has not and set its retention
 - A SMART project scaffolded with `socialagent init` (the CLI needs Python 3.11+)
 - AWS End User Messaging Social (EUM Social) with a linked WhatsApp Business Account
 
@@ -68,6 +68,8 @@ socialagent status           # the stack and its outputs
 `deploy` generates `.socialagent/<project>-<env>.tfvars.json` from `socialagent.<env>.yaml`, runs `terraform init` against the backend in the YAML's `state:` block, selects (or creates) the workspace, and plans or applies. `socialagent config tfvars` prints the generated variables without writing anything. See [Configuration](../docs/configuration.md) for the YAML reference.
 
 The agent container is built by CodeBuild during the apply; no local Docker is needed. After the first deploy, associate the SNS topic ARN in the outputs with your EUM Social phone number (one-time, in the AWS Console).
+
+On a stack's first deploy, IAM can take a minute to apply the roles and policies the apply has just created. A CodeBuild build (the Lambda layer, the agent image, the zip package or the template sync) that CodeBuild cannot start for that reason fails in its `QUEUED` phase with `CLIENT_ERROR` and runs nothing, so the apply starts it again, up to six times in all, 20, 40, 60, 80 and 100 seconds apart; a build that ran and failed fails the apply at once. Rarely, the AWS provider retries a `CreateRole` that IAM had already done and fails with `EntityAlreadyExists` for a role that is not in the state. Check that the role carries the stack's `Project` and `Environment` tags and has no policies attached (`aws iam list-attached-role-policies` and `aws iam list-role-policies`), delete it (`aws iam delete-role --role-name <name>`), and run `socialagent deploy` again.
 
 ### Contributor path: the same stack, from the repo
 
@@ -183,7 +185,7 @@ Terraform uploads the agent source to S3, a CodeBuild job installs its `requirem
 
 ## PII Log Masking
 
-When `enable_pii_log_protection` is `true` (the default), a CloudWatch Logs [data protection policy](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html) is attached to each Lambda log group to mask phone numbers, full names, and email addresses. Both variables are set under `terraform:` in the project's `socialagent.<env>.yaml`:
+When `enable_pii_log_protection` is `true` (the default), a CloudWatch Logs [data protection policy](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/mask-sensitive-log-data.html) is attached to each Lambda log group and to the agent runtime's to mask phone numbers, full names, and email addresses. The runtime's also masks a number with a leading `+`, of any country, in the usual formats, a national number written in groups, the session ids that hold the user's number and the schedule ids the runtime generates from it, and keeps its events 30 days, like the Lambda groups ([The agent runtime's log group](../docs/configuration.md#the-agent-runtimes-log-group)). Both variables are set under `terraform:` in the project's `socialagent.<env>.yaml`:
 
 ```yaml
 terraform:
@@ -193,7 +195,7 @@ terraform:
 
 ### Known limitation: phone-number country coverage
 
-CloudWatch Logs' `PhoneNumber` data identifier requires a country suffix and supports only `BR`, `DE`, `ES`, `FR`, `GB`, `IT`, `US`. So `+1` (US/Canada) is masked via `PhoneNumber-US` and `+55` (Brazil) via `PhoneNumber-BR`, but **`+52` (Mexico) is not auto-masked** — there is no `PhoneNumber-MX`. Unsupported codes fail fast at `terraform plan`; to mask `+52` numbers, add a custom (regex-based) data identifier, which is outside this baseline. The SDK does not rely on it: its log lines name a user by the last four digits of the phone number (`mask_phone`), whatever the country, in the Lambda log groups and in the agent runtime's, which has no data protection policy. Two gaps remain in those lines, listed under M6 in the [threat model](../docs/threat-model.md#m6-add-pii-scrubbing-from-cloudwatch-logs-before-storage): a WhatsApp message id (`wamid`), which encodes the user's number, is logged whole by the attachment warnings and the `personal-assistant` webhook's PDF warning, and an exception's own text, which can quote the number, is logged unmasked in a traceback and in some warnings that quote the error.
+CloudWatch Logs' `PhoneNumber` data identifier requires a country suffix and supports only `BR`, `DE`, `ES`, `FR`, `GB`, `IT`, `US`. So `+1` (US/Canada) is masked via `PhoneNumber-US` and `+55` (Brazil) via `PhoneNumber-BR`, but **`+52` (Mexico) is not auto-masked in the Lambda log groups** — there is no `PhoneNumber-MX`. Unsupported codes fail fast at `terraform plan`. The agent runtime's log group has custom (regex-based) data identifiers for a number with a leading `+` of any country, `+52` included, in the usual formats, and for a national number written in groups; adding them to the Lambda groups is outside this baseline. The SDK does not rely on either: its log lines name a user by the last four digits of the phone number (`mask_phone`), whatever the country, in the Lambda log groups and in the agent runtime's. Two gaps remain in those lines, listed under M6 in the [threat model](../docs/threat-model.md#m6-add-pii-scrubbing-from-cloudwatch-logs-before-storage): a WhatsApp message id (`wamid`), which encodes the user's number, is logged whole by the attachment warnings and the `personal-assistant` webhook's PDF warning, and an exception's own text, which can quote the number, is logged unmasked in a traceback and in some warnings that quote the error.
 
 ## Network Mode
 
@@ -209,21 +211,28 @@ The stack uses AWS-managed keys and service defaults (the `ENCRYPTION POSTURE` c
 socialagent destroy --env dev        # from the project; make tf-destroy ENV=my-bot-dev from the repository root
 ```
 
-Destroys the stack resources, including AgentCore Runtime, Memory, the ECR repository, and all Lambda functions. Secrets Manager keeps deleted secrets in a seven-day recovery window, however. Recreating the same project and environment during that window can therefore fail because names such as `dev-my-bot-event-webhook-secret` are still reserved. `enable_force_destroy` applies to non-empty buckets and does not bypass this recovery window.
+Destroys the stack resources, including AgentCore Runtime, Memory, the ECR repository, and all Lambda functions. Terraform does not own the agent runtime's log group, which AgentCore creates, and does not delete it; the 30-day retention the stack set on it still expires its events.
 
-For a development stack that must reuse the same name immediately, first inspect the scheduled secret and confirm that its `Project` and `Environment` tags identify the stack you just destroyed:
+Secrets Manager keeps deleted secrets in a seven-day recovery window. Recreating the same project and environment during that window can therefore fail because names such as `dev-my-bot-event-webhook-secret` are still reserved. `enable_force_destroy` applies to non-empty buckets and does not bypass this recovery window.
+
+For a development stack that must reuse the same name immediately, first inspect the scheduled secret and confirm that its tags identify the stack you just destroyed: `Project` must equal the `project` and `Environment` the `environment` from `socialagent.<env>.yaml` (`my-bot` and `dev` here). Use the `region` from the same file:
 
 ```bash
 SECRET_NAME=dev-my-bot-event-webhook-secret
+REGION=us-east-1   # the region in socialagent.<env>.yaml
 aws secretsmanager describe-secret \
+  --region "$REGION" \
   --secret-id "$SECRET_NAME" \
   --query '{Name:Name,DeletedDate:DeletedDate,Tags:Tags}'
 ```
 
-Only when `DeletedDate` is set and both tags match exactly, permanently delete that specific secret:
+A project secret (a name under `secrets:` in the YAML, created as `<environment>-<project>-<name>`) needs one more check first. The redeployed stack recreates it as `{}`, so its value has to be set again with `socialagent secrets set`, and force-deleting it removes the only way to read the old value. If you still need that value, cancel the deletion with `aws secretsmanager restore-secret`, after which `aws secretsmanager get-secret-value` works again, and save the value before you continue. A restored secret no longer has a `DeletedDate`; check its tags again before you delete it. The event webhook secret needs none of this, because the deploy generates a new value for it.
+
+Only when `DeletedDate` is set (or you have just restored the secret to save its value) and both tags match exactly, permanently delete that specific secret:
 
 ```bash
 aws secretsmanager delete-secret \
+  --region "$REGION" \
   --secret-id "$SECRET_NAME" \
   --force-delete-without-recovery
 ```
@@ -245,7 +254,7 @@ This deletion cannot be undone. Never force-delete a secret based on its name al
 | `secrets/` | `main.tf` | Secrets Manager entries |
 | `guardrails/` | `main.tf` | Bedrock Guardrails |
 | `observability/` | `main.tf` | X-Ray Transaction Search, agent runtime alarms and dashboard |
-| `monitoring/` | `main.tf` | Alarm topic, Lambda alarms, dashboard |
+| `monitoring/` | `main.tf` | Log groups' retention and data protection (the Lambdas' and the agent runtime's), alarm topic, Lambda alarms, dashboard |
 | `security-logging/` | `main.tf` | CloudTrail + Bedrock logging |
 | `templates/` | `main.tf` | WhatsApp template sync via CodeBuild |
 | `sns-testing/` | `main.tf` | Dev/test notification topic |
