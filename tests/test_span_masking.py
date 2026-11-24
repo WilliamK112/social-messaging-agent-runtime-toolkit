@@ -263,3 +263,77 @@ def test_a_wrapper_another_library_installed_first_does_not_stop_the_masking(
     )
     assert {"record_exception", "set_status", "add_event"} <= set(calls)
     _no_number(exporter)
+
+
+# ── follow-ups from #227's review ─────────────────────────────────────────────
+
+
+def test_a_span_attribute_is_unchanged_after_a_masked_exception(unpatched, spans):
+    """Only exception text and the status are masked: an attribute set on the
+    span, such as AgentCore's ``session.id``, stays exactly as it was (#226)."""
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    session = f"whatsapp-session-conversation-52{DIGITS}"
+    with pytest.raises(ValueError):
+        with tracer.start_as_current_span("tool") as span:
+            span.set_attribute("session.id", session)
+            raise ValueError(f"recipient {PHONE} is not on WhatsApp")
+
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes["session.id"] == session
+    assert _exception_event(span)["exception.message"] == (
+        "recipient +...0100 is not on WhatsApp"
+    )
+
+
+def test_a_sequence_attribute_on_a_recorded_exception_is_masked(unpatched, spans):
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(
+            RuntimeError("boom"),
+            attributes={"recipients": [PHONE, "+15555550100"], "counts": [1, 2]},
+        )
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert list(event["recipients"]) == ["+...0100", "+...0100"]
+    assert list(event["counts"]) == [1, 2]
+
+
+def test_attributes_that_cannot_be_read_never_raise(unpatched, spans):
+    """The caller's attributes are read inside the guard: one that cannot be
+    turned into a dict is dropped, and the exception is still recorded."""
+
+    class Unreadable:
+        def __bool__(self):
+            return True
+
+        def keys(self):
+            raise RuntimeError(f"cannot read {PHONE}")
+
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(ValueError(f"for {PHONE}"), attributes=Unreadable())
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert event["exception.message"] == "for +...0100"
+    _no_number(exporter)
+
+
+def test_the_fallback_event_never_raises(unpatched, spans, monkeypatch):
+    """When both the SDK's ``record_exception`` and its ``add_event`` fail,
+    recording the exception returns quietly instead of raising into the caller."""
+
+    class Unprintable(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("no str")
+
+    def broken_add_event(self, *args, **kwargs):
+        raise RuntimeError("exporter gone")
+
+    monkeypatch.setattr(Span, "add_event", broken_add_event)
+    _span_masking.install_span_masking()
+    tracer, _ = spans
+    with tracer.start_as_current_span("tool") as span:
+        assert span.record_exception(Unprintable()) is None

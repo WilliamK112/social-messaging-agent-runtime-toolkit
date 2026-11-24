@@ -32,14 +32,21 @@ _EXCEPTION_EVENT = "exception"
 _MASKING_MARKER = "_socialagent_masks_phone_numbers"
 
 
+def _masked_value(value: Any) -> Any:
+    """A string masked, and each string in a list or tuple (an OpenTelemetry
+    attribute may be a sequence of strings); anything else as it is."""
+    if isinstance(value, str):
+        return mask_phone(value)
+    if isinstance(value, (list, tuple)):
+        return type(value)(mask_phone(v) if isinstance(v, str) else v for v in value)
+    return value
+
+
 def _masked_attributes(attributes: Any) -> Any:
     """``attributes`` with every string value masked; anything else as it is."""
     if not attributes:
         return attributes
-    return {
-        key: mask_phone(value) if isinstance(value, str) else value
-        for key, value in dict(attributes).items()
-    }
+    return {key: _masked_value(value) for key, value in dict(attributes).items()}
 
 
 def _exception_attributes(exception: BaseException) -> dict[str, str]:
@@ -103,13 +110,16 @@ def install_span_masking() -> None:
     def record_exception(
         self, exception, attributes=None, timestamp=None, escaped=False
     ):
-        masked = {
-            **_exception_attributes(exception),
-            **(_masked_attributes(attributes) or {}),
-        }
+        try:
+            caller = _masked_attributes(attributes) or {}
+        except Exception:  # noqa: BLE001 - attributes that cannot be read are dropped
+            caller = {}
+        masked = {**_exception_attributes(exception), **caller}
         try:
             return sdk_record_exception(self, exception, masked, timestamp, escaped)
         except Exception:  # noqa: BLE001 - the SDK's str(exception) raised
+            pass
+        try:
             return sdk_add_event(
                 self,
                 _EXCEPTION_EVENT,
@@ -120,6 +130,8 @@ def install_span_masking() -> None:
                 },
                 timestamp,
             )
+        except Exception:  # noqa: BLE001 - recording an exception must never raise
+            return None
 
     @functools.wraps(sdk_set_status)
     def set_status(self, status, description=None):
