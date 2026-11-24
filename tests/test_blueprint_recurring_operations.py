@@ -356,6 +356,7 @@ class FakeStateTable:
         expired = (
             held is not None
             and isinstance(held.get("ttl"), int)
+            and not isinstance(held.get("ttl"), bool)
             and held["ttl"] < ExpressionAttributeValues[":now"]
         )
         if held is not None and not expired:
