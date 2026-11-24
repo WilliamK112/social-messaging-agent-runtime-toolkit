@@ -317,3 +317,39 @@ def test_a_spaced_number_in_an_exception_group_message_is_masked():
         run_handler(_raise(group))
     assert "5555" not in str(raised.value)
     assert "+...0100" in str(raised.value)
+
+
+# ── follow-ups from #213's review ─────────────────────────────────────────────
+
+
+def test_the_fallback_does_not_carry_the_unmasked_original_as_its_context():
+    """``__suppress_context__`` only hides the original from a printed
+    traceback; anything that walks ``__context__`` would still read it."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    assert traceback.extract_tb(raised.value.__traceback__)[-1].name == "coro"
+
+
+def test_notes_are_masked_on_an_error_whose_text_is_masked_in_place():
+    exc = RuntimeError(f"recipient {PHONE} unknown")
+    exc.add_note(f"while sending to {PHONE}")
+    with pytest.raises(RuntimeError) as raised:
+        run_handler(_raise(exc))
+    assert raised.value is exc
+    assert raised.value.__notes__ == ["while sending to +...0100"]
+
+
+def test_notes_are_masked_on_an_error_whose_text_holds_no_number():
+    exc = RuntimeError("send failed")
+    exc.add_note(f"recipient {PHONE}")
+    with pytest.raises(RuntimeError) as raised:
+        run_handler(_raise(exc))
+    assert str(raised.value) == "send failed"
+    assert raised.value.__notes__ == ["recipient +...0100"]

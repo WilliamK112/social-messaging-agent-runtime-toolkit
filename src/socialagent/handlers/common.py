@@ -46,6 +46,7 @@ def mask_exception_text(exc: BaseException) -> BaseException:
     ``MaskedHandlerError`` naming the type stands in. An exception that cannot
     print at all is returned as it is. Never raises.
     """
+    _mask_notes(exc)
     try:
         text = str(exc)
     except Exception:  # noqa: BLE001 - nothing to mask in a text that never prints
@@ -80,6 +81,17 @@ def mask_exception_text(exc: BaseException) -> BaseException:
         return replacement
     except Exception:  # noqa: BLE001 - masking must never replace the real error
         return exc
+
+
+def _mask_notes(exc: BaseException) -> None:
+    """Mask each note ``add_note`` attached, in place: a printed traceback
+    shows them under the exception's text. Never raises."""
+    try:
+        notes = getattr(exc, "__notes__", None)
+        if isinstance(notes, list):
+            exc.__notes__ = [mask_phone(n) if isinstance(n, str) else n for n in notes]
+    except Exception:  # noqa: BLE001 - notes that cannot be read stay as they are
+        pass
 
 
 def _changed_texts(original: tuple, masked: tuple) -> list[tuple[str, str]]:
@@ -126,7 +138,9 @@ def run_handler(coro: Any) -> Any:
         masked = mask_exception_text(exc)
         if masked is exc:
             raise
-        raise masked from None
+    # Raised outside the except block, so Python does not set the unmasked
+    # original as the stand-in's __context__.
+    raise masked
 
 
 # Once fewer seconds than this would be left after a gap, the remaining sends
