@@ -77,6 +77,9 @@ def mask_exception_text(exc: BaseException) -> BaseException:
             pass
         replacement = MaskedHandlerError(f"{type(exc).__name__}: {fallback}")
         replacement.__traceback__ = exc.__traceback__
+        notes = getattr(exc, "__notes__", None)
+        if isinstance(notes, list):
+            replacement.__notes__ = list(notes)  # masked by _mask_notes above
         replacement.__suppress_context__ = True
         return replacement
     except Exception:  # noqa: BLE001 - masking must never replace the real error

@@ -313,10 +313,9 @@ def test_a_spaced_number_in_an_exception_group_message_is_masked():
     """``ExceptionGroup`` prints its ``message`` attribute, not ``args``, so
     masking the arguments alone leaves the spaced number whole in its text."""
     group = ExceptionGroup(SPACED, [ValueError("x")])
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(MaskedHandlerError) as raised:
         run_handler(_raise(group))
-    assert "5555" not in str(raised.value)
-    assert "+...0100" in str(raised.value)
+    assert str(raised.value) == "ExceptionGroup: +...0100 (1 sub-exception)"
 
 
 # ── follow-ups from #213's review ─────────────────────────────────────────────
@@ -353,3 +352,15 @@ def test_notes_are_masked_on_an_error_whose_text_holds_no_number():
         run_handler(_raise(exc))
     assert str(raised.value) == "send failed"
     assert raised.value.__notes__ == ["recipient +...0100"]
+
+
+def test_the_stand_in_keeps_the_original_notes_masked():
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+    exc = Opaque()
+    exc.add_note(f"while sending to {PHONE}")
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(exc))
+    assert raised.value.__notes__ == ["while sending to +...0100"]
