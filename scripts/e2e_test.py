@@ -110,10 +110,21 @@ def test_remember_recall(client, arn, memory_id) -> bool:
     return stored and recalled
 
 
-def test_scheduling(client, arn, memory_id) -> bool:
+def schedule_names(scheduler, prefix: str) -> set[str]:
+    names: set[str] = set()
+    for page in scheduler.get_paginator("list_schedules").paginate(NamePrefix=prefix):
+        names.update(s["Name"] for s in page["Schedules"])
+    return names
+
+
+def test_scheduling(client, arn, memory_id, scheduler, prefix: str) -> bool:
+    # The reply's wording follows the blueprint's language, so the check is the schedule the
+    # turn created for the test phone, read back from EventBridge Scheduler.
+    before = schedule_names(scheduler, prefix)
     text = invoke(client, arn, "Remind me in 5 minutes to drink water", f"sched-{int(time.time())}", memory_id)
-    ok = any(w in text.lower() for w in ["scheduled", "remind", "minutes", "water", "set", "alarm"])
-    print(f"  {PASS if ok else FAIL} Schedule reminder")
+    created = sorted(schedule_names(scheduler, prefix) - before)
+    ok = bool(created)
+    print(f"  {PASS if ok else FAIL} Schedule reminder ({', '.join(created) or 'no new schedule'})")
     if not ok:
         print(f"    Response: {text[:200]}")
     return ok
@@ -134,20 +145,25 @@ def main():
     print(f"Runtime: {arn}")
     print(f"Memory:  {memory_id}\n")
 
-    client = boto3.client("bedrock-agentcore", region_name=config.get("region", "us-east-1"))
+    region = config.get("region", "us-east-1")
+    client = boto3.client("bedrock-agentcore", region_name=region)
+    scheduler = boto3.client("scheduler", region_name=region)
+    # The stack names a schedule {env}-{project}-{schedule id}, and an id owned by a phone
+    # starts with its digits (docs/events-scheduling.md).
+    schedule_prefix = f"{env}-{project}-{DIGITS}-"
 
     tests = [
-        ("Agent responds to greeting", test_greeting),
-        ("WhatsApp formatting", test_whatsapp_formatting),
-        ("Remember + Recall", test_remember_recall),
-        ("Scheduling", test_scheduling),
+        ("Agent responds to greeting", lambda: test_greeting(client, arn, memory_id)),
+        ("WhatsApp formatting", lambda: test_whatsapp_formatting(client, arn, memory_id)),
+        ("Remember + Recall", lambda: test_remember_recall(client, arn, memory_id)),
+        ("Scheduling", lambda: test_scheduling(client, arn, memory_id, scheduler, schedule_prefix)),
     ]
 
     results = []
     for name, fn in tests:
         print(f"\n[{name}]")
         try:
-            results.append(fn(client, arn, memory_id))
+            results.append(fn())
         except Exception as e:
             print(f"  {FAIL} Exception: {e}")
             results.append(False)
