@@ -18,6 +18,7 @@ tracer provider ADOT installs.
 from __future__ import annotations
 
 import functools
+from collections.abc import Sequence
 import traceback
 from typing import Any
 
@@ -33,20 +34,30 @@ _MASKING_MARKER = "_socialagent_masks_phone_numbers"
 
 
 def _masked_value(value: Any) -> Any:
-    """A string masked, and each string in a list or tuple (an OpenTelemetry
-    attribute may be a sequence of strings); anything else as it is."""
+    """A string masked, and each string in any other sequence (an OpenTelemetry
+    attribute may be a sequence of strings), as a tuple, which is how the SDK
+    stores a sequence; bytes and anything else as it is."""
     if isinstance(value, str):
         return mask_phone(value)
-    if isinstance(value, (list, tuple)):
-        return type(value)(mask_phone(v) if isinstance(v, str) else v for v in value)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return tuple(mask_phone(v) if isinstance(v, str) else v for v in value)
     return value
 
 
 def _masked_attributes(attributes: Any) -> Any:
-    """``attributes`` with every string value masked; anything else as it is."""
+    """``attributes`` with every string value masked; anything else as it is.
+
+    Each value is masked on its own: one that cannot be masked is dropped,
+    rather than every attribute going on unmasked."""
     if not attributes:
         return attributes
-    return {key: _masked_value(value) for key, value in dict(attributes).items()}
+    masked = {}
+    for key, value in dict(attributes).items():
+        try:
+            masked[key] = _masked_value(value)
+        except Exception:  # noqa: BLE001 - a value that cannot be read is dropped
+            continue
+    return masked
 
 
 def _exception_attributes(exception: BaseException) -> dict[str, str]:

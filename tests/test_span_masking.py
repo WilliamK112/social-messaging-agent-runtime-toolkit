@@ -337,3 +337,47 @@ def test_the_fallback_event_never_raises(unpatched, spans, monkeypatch):
     tracer, _ = spans
     with tracer.start_as_current_span("tool") as span:
         assert span.record_exception(Unprintable()) is None
+
+
+def test_a_namedtuple_attribute_is_masked_on_a_recorded_exception(unpatched, spans):
+    """``type(value)(iterable)`` fails for a namedtuple; any non-bytes sequence
+    is masked into a tuple, which is how the SDK stores a sequence anyway."""
+    from collections import namedtuple
+
+    Pair = namedtuple("Pair", "to via")
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(
+            RuntimeError(f"for {PHONE}"), attributes={"route": Pair(PHONE, "wa")}
+        )
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert tuple(event["route"]) == ("+...0100", "wa")
+    assert event["exception.message"] == "for +...0100"
+
+
+def test_a_hand_added_exception_event_with_a_namedtuple_stays_masked(unpatched, spans):
+    """When masking one value failed, the add_event wrapper passed every
+    attribute on unmasked; ``exception.message`` included."""
+    from collections import namedtuple
+
+    Pair = namedtuple("Pair", "to via")
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.add_event(
+            "exception",
+            {"exception.message": f"bad recipient {PHONE}", "route": Pair(PHONE, "wa")},
+        )
+
+    (span,) = exporter.get_finished_spans()
+    _no_number(exporter)
+    assert _exception_event(span)["exception.message"] == "bad recipient +...0100"
+
+
+def test_bytes_and_other_sequences(unpatched):
+    from collections import deque
+
+    assert _span_masking._masked_value(deque([PHONE, 1])) == ("+...0100", 1)
+    assert _span_masking._masked_value(b"525555550100") == b"525555550100"
