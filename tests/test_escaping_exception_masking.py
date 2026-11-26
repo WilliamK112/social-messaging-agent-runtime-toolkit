@@ -364,3 +364,37 @@ def test_the_stand_in_keeps_the_original_notes_masked():
     with pytest.raises(MaskedHandlerError) as raised:
         run_handler(_raise(exc))
     assert raised.value.__notes__ == ["while sending to +...0100"]
+
+
+def test_notes_that_raise_on_read_still_leave_the_stand_in_masked():
+    """The stand-in is what keeps the number out, so a ``__notes__`` that
+    raises on read must not let the original escape instead."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+        @property
+        def __notes__(self):
+            raise KeyError(f"no notes for {PHONE}")
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert str(raised.value) == "Opaque: cannot reach +...0100"
+
+
+def test_read_only_notes_are_masked_on_the_stand_in():
+    """``_mask_notes`` cannot assign a read-only ``__notes__``; each note is
+    masked again as the stand-in copies it."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+        @property
+        def __notes__(self):
+            return [f"while sending to {PHONE}"]
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert raised.value.__notes__ == ["while sending to +...0100"]

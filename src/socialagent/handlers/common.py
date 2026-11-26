@@ -77,9 +77,17 @@ def mask_exception_text(exc: BaseException) -> BaseException:
             pass
         replacement = MaskedHandlerError(f"{type(exc).__name__}: {fallback}")
         replacement.__traceback__ = exc.__traceback__
-        notes = getattr(exc, "__notes__", None)
-        if isinstance(notes, list):
-            replacement.__notes__ = list(notes)  # masked by _mask_notes above
+        # A guard of its own, so notes that fail to read never cost the
+        # stand-in; each note is masked as it is copied, since a read-only
+        # __notes__ could not be masked in place.
+        try:
+            notes = getattr(exc, "__notes__", None)
+            if isinstance(notes, list):
+                replacement.__notes__ = [
+                    mask_phone(n) if isinstance(n, str) else n for n in notes
+                ]
+        except Exception:  # noqa: BLE001 - notes that cannot be read are left off
+            pass
         replacement.__suppress_context__ = True
         return replacement
     except Exception:  # noqa: BLE001 - masking must never replace the real error
