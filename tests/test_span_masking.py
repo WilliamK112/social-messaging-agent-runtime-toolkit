@@ -15,6 +15,7 @@ ends, for any framework, the way ``install_log_masking`` does for ``logging``.
 from __future__ import annotations
 
 import builtins
+from collections.abc import Sequence
 import sys
 from pathlib import Path
 
@@ -381,3 +382,37 @@ def test_bytes_and_other_sequences(unpatched):
 
     assert _span_masking._masked_value(deque([PHONE, 1])) == ("+...0100", 1)
     assert _span_masking._masked_value(b"525555550100") == b"525555550100"
+
+
+class _BrokenSequence(Sequence):
+    """A sequence whose iteration raises, so masking it fails."""
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index):
+        raise RuntimeError(f"cannot read {PHONE}")
+
+
+def test_a_value_that_cannot_be_masked_is_dropped_not_sent_unmasked(unpatched, spans):
+    """Only the per-value guard stands between such a value and a hand-added
+    ``exception`` event going out with ``exception.message`` unmasked."""
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.add_event(
+            "exception",
+            {"exception.message": f"bad recipient {PHONE}", "route": _BrokenSequence()},
+        )
+        span.record_exception(
+            ValueError(f"for {PHONE}"), attributes={"route": _BrokenSequence()}
+        )
+
+    (span,) = exporter.get_finished_spans()
+    events = [dict(e.attributes) for e in span.events if e.name == "exception"]
+    assert [e["exception.message"] for e in events] == [
+        "bad recipient +...0100",
+        "for +...0100",
+    ]
+    assert all("route" not in e for e in events)
+    _no_number(exporter)
