@@ -46,25 +46,29 @@ def mask_exception_text(exc: BaseException) -> BaseException:
     ``MaskedHandlerError`` naming the type stands in. An exception that cannot
     print at all is returned as it is. Never raises.
     """
+    _mask_notes(exc)
     try:
         text = str(exc)
     except Exception:  # noqa: BLE001 - nothing to mask in a text that never prints
         return exc
     try:
-        masked = mask_phone(text)
         original = exc.args
         masked_args = tuple(_masked_arg_or_itself(arg) for arg in original)
+        # mask_phone cuts a spaced number as a whole argument but not inside free
+        # text, so each changed argument's own text is replaced by its masked
+        # text wherever it shows up, as it does when __str__ reads an attribute
+        # (ExceptionGroup's message) or formats an argument the masking changed.
+        changed = _changed_texts(original, masked_args)
+        masked = _scrubbed(text, changed)
         if masked == text and masked_args == original:
             return exc
-        # The fallback's text starts from the masked arguments where they print,
-        # since mask_phone cuts a spaced number as an argument, not in free text.
         fallback = masked
         try:
             exc.args = masked_args
             after = str(exc)
-            if mask_phone(after) == after:
+            if _scrubbed(after, changed) == after:
                 return exc
-            fallback = mask_phone(after)
+            fallback = _scrubbed(after, changed)
         except Exception:  # noqa: BLE001 - read-only args, or its text no longer prints
             pass
         try:
@@ -73,10 +77,53 @@ def mask_exception_text(exc: BaseException) -> BaseException:
             pass
         replacement = MaskedHandlerError(f"{type(exc).__name__}: {fallback}")
         replacement.__traceback__ = exc.__traceback__
+        # A guard of its own, so notes that fail to read never cost the
+        # stand-in; each note is masked as it is copied, since a read-only
+        # __notes__ could not be masked in place.
+        try:
+            notes = getattr(exc, "__notes__", None)
+            if isinstance(notes, list):
+                replacement.__notes__ = [
+                    mask_phone(n) if isinstance(n, str) else n for n in notes
+                ]
+        except Exception:  # noqa: BLE001 - notes that cannot be read are left off
+            pass
         replacement.__suppress_context__ = True
         return replacement
     except Exception:  # noqa: BLE001 - masking must never replace the real error
         return exc
+
+
+def _mask_notes(exc: BaseException) -> None:
+    """Mask each note ``add_note`` attached, in place: a printed traceback
+    shows them under the exception's text. Never raises."""
+    try:
+        notes = getattr(exc, "__notes__", None)
+        if isinstance(notes, list):
+            exc.__notes__ = [mask_phone(n) if isinstance(n, str) else n for n in notes]
+    except Exception:  # noqa: BLE001 - notes that cannot be read stay as they are
+        pass
+
+
+def _changed_texts(original: tuple, masked: tuple) -> list[tuple[str, str]]:
+    """Each argument's text and its masked text, for the arguments masking
+    changed, longest first so a number inside a longer argument goes with it."""
+    pairs = []
+    for before, after in zip(original, masked):
+        if after is before:
+            continue
+        try:
+            pairs.append((str(before), str(after)))
+        except Exception:  # noqa: BLE001 - an argument that cannot print adds nothing
+            continue
+    return sorted((p for p in pairs if p[0] and p[0] != p[1]), key=lambda p: -len(p[0]))
+
+
+def _scrubbed(text: str, changed: list[tuple[str, str]]) -> str:
+    """``text`` with each changed argument's text masked, then ``mask_phone``'s cut."""
+    for before, after in changed:
+        text = text.replace(before, after)
+    return mask_phone(text)
 
 
 def _masked_arg_or_itself(arg: Any) -> Any:
@@ -102,7 +149,9 @@ def run_handler(coro: Any) -> Any:
         masked = mask_exception_text(exc)
         if masked is exc:
             raise
-        raise masked from None
+    # Raised outside the except block, so Python does not set the unmasked
+    # original as the stand-in's __context__.
+    raise masked
 
 
 # Once fewer seconds than this would be left after a gap, the remaining sends

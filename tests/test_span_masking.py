@@ -15,6 +15,7 @@ ends, for any framework, the way ``install_log_masking`` does for ``logging``.
 from __future__ import annotations
 
 import builtins
+from collections.abc import Sequence
 import sys
 from pathlib import Path
 
@@ -262,4 +263,156 @@ def test_a_wrapper_another_library_installed_first_does_not_stop_the_masking(
         span.status.description == "ValueError: recipient +...0100 is not on WhatsApp"
     )
     assert {"record_exception", "set_status", "add_event"} <= set(calls)
+    _no_number(exporter)
+
+
+# ── follow-ups from #227's review ─────────────────────────────────────────────
+
+
+def test_a_span_attribute_is_unchanged_after_a_masked_exception(unpatched, spans):
+    """Only exception text and the status are masked: an attribute set on the
+    span, such as AgentCore's ``session.id``, stays exactly as it was (#226)."""
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    session = f"whatsapp-session-conversation-52{DIGITS}"
+    with pytest.raises(ValueError):
+        with tracer.start_as_current_span("tool") as span:
+            span.set_attribute("session.id", session)
+            raise ValueError(f"recipient {PHONE} is not on WhatsApp")
+
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes["session.id"] == session
+    assert _exception_event(span)["exception.message"] == (
+        "recipient +...0100 is not on WhatsApp"
+    )
+
+
+def test_a_sequence_attribute_on_a_recorded_exception_is_masked(unpatched, spans):
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(
+            RuntimeError("boom"),
+            attributes={"recipients": [PHONE, "+15555550100"], "counts": [1, 2]},
+        )
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert list(event["recipients"]) == ["+...0100", "+...0100"]
+    assert list(event["counts"]) == [1, 2]
+
+
+def test_attributes_that_cannot_be_read_never_raise(unpatched, spans):
+    """The caller's attributes are read inside the guard: one that cannot be
+    turned into a dict is dropped, and the exception is still recorded."""
+
+    class Unreadable:
+        def __bool__(self):
+            return True
+
+        def keys(self):
+            raise RuntimeError(f"cannot read {PHONE}")
+
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(ValueError(f"for {PHONE}"), attributes=Unreadable())
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert event["exception.message"] == "for +...0100"
+    _no_number(exporter)
+
+
+def test_the_fallback_event_never_raises(unpatched, spans, monkeypatch):
+    """When both the SDK's ``record_exception`` and its ``add_event`` fail,
+    recording the exception returns quietly instead of raising into the caller."""
+
+    class Unprintable(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("no str")
+
+    def broken_add_event(self, *args, **kwargs):
+        raise RuntimeError("exporter gone")
+
+    monkeypatch.setattr(Span, "add_event", broken_add_event)
+    _span_masking.install_span_masking()
+    tracer, _ = spans
+    with tracer.start_as_current_span("tool") as span:
+        assert span.record_exception(Unprintable()) is None
+
+
+def test_a_namedtuple_attribute_is_masked_on_a_recorded_exception(unpatched, spans):
+    """``type(value)(iterable)`` fails for a namedtuple; any non-bytes sequence
+    is masked into a tuple, which is how the SDK stores a sequence anyway."""
+    from collections import namedtuple
+
+    Pair = namedtuple("Pair", "to via")
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.record_exception(
+            RuntimeError(f"for {PHONE}"), attributes={"route": Pair(PHONE, "wa")}
+        )
+
+    event = _exception_event(exporter.get_finished_spans()[0])
+    assert tuple(event["route"]) == ("+...0100", "wa")
+    assert event["exception.message"] == "for +...0100"
+
+
+def test_a_hand_added_exception_event_with_a_namedtuple_stays_masked(unpatched, spans):
+    """When masking one value failed, the add_event wrapper passed every
+    attribute on unmasked; ``exception.message`` included."""
+    from collections import namedtuple
+
+    Pair = namedtuple("Pair", "to via")
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.add_event(
+            "exception",
+            {"exception.message": f"bad recipient {PHONE}", "route": Pair(PHONE, "wa")},
+        )
+
+    (span,) = exporter.get_finished_spans()
+    _no_number(exporter)
+    assert _exception_event(span)["exception.message"] == "bad recipient +...0100"
+
+
+def test_bytes_and_other_sequences(unpatched):
+    from collections import deque
+
+    assert _span_masking._masked_value(deque([PHONE, 1])) == ("+...0100", 1)
+    assert _span_masking._masked_value(b"525555550100") == b"525555550100"
+
+
+class _BrokenSequence(Sequence):
+    """A sequence whose iteration raises, so masking it fails."""
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index):
+        raise RuntimeError(f"cannot read {PHONE}")
+
+
+def test_a_value_that_cannot_be_masked_is_dropped_not_sent_unmasked(unpatched, spans):
+    """Only the per-value guard stands between such a value and a hand-added
+    ``exception`` event going out with ``exception.message`` unmasked."""
+    _span_masking.install_span_masking()
+    tracer, exporter = spans
+    with tracer.start_as_current_span("tool") as span:
+        span.add_event(
+            "exception",
+            {"exception.message": f"bad recipient {PHONE}", "route": _BrokenSequence()},
+        )
+        span.record_exception(
+            ValueError(f"for {PHONE}"), attributes={"route": _BrokenSequence()}
+        )
+
+    (span,) = exporter.get_finished_spans()
+    events = [dict(e.attributes) for e in span.events if e.name == "exception"]
+    assert [e["exception.message"] for e in events] == [
+        "bad recipient +...0100",
+        "for +...0100",
+    ]
+    assert all("route" not in e for e in events)
     _no_number(exporter)

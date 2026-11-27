@@ -18,6 +18,7 @@ tracer provider ADOT installs.
 from __future__ import annotations
 
 import functools
+from collections.abc import Sequence
 import traceback
 from typing import Any
 
@@ -32,14 +33,31 @@ _EXCEPTION_EVENT = "exception"
 _MASKING_MARKER = "_socialagent_masks_phone_numbers"
 
 
+def _masked_value(value: Any) -> Any:
+    """A string masked, and each string in any other sequence (an OpenTelemetry
+    attribute may be a sequence of strings), as a tuple, which is how the SDK
+    stores a sequence; bytes and anything else as it is."""
+    if isinstance(value, str):
+        return mask_phone(value)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return tuple(mask_phone(v) if isinstance(v, str) else v for v in value)
+    return value
+
+
 def _masked_attributes(attributes: Any) -> Any:
-    """``attributes`` with every string value masked; anything else as it is."""
+    """``attributes`` with every string value masked; anything else as it is.
+
+    Each value is masked on its own: one that cannot be masked is dropped,
+    rather than every attribute going on unmasked."""
     if not attributes:
         return attributes
-    return {
-        key: mask_phone(value) if isinstance(value, str) else value
-        for key, value in dict(attributes).items()
-    }
+    masked = {}
+    for key, value in dict(attributes).items():
+        try:
+            masked[key] = _masked_value(value)
+        except Exception:  # noqa: BLE001 - a value that cannot be read is dropped
+            continue
+    return masked
 
 
 def _exception_attributes(exception: BaseException) -> dict[str, str]:
@@ -103,13 +121,16 @@ def install_span_masking() -> None:
     def record_exception(
         self, exception, attributes=None, timestamp=None, escaped=False
     ):
-        masked = {
-            **_exception_attributes(exception),
-            **(_masked_attributes(attributes) or {}),
-        }
+        try:
+            caller = _masked_attributes(attributes) or {}
+        except Exception:  # noqa: BLE001 - attributes that cannot be read are dropped
+            caller = {}
+        masked = {**_exception_attributes(exception), **caller}
         try:
             return sdk_record_exception(self, exception, masked, timestamp, escaped)
         except Exception:  # noqa: BLE001 - the SDK's str(exception) raised
+            pass
+        try:
             return sdk_add_event(
                 self,
                 _EXCEPTION_EVENT,
@@ -120,6 +141,8 @@ def install_span_masking() -> None:
                 },
                 timestamp,
             )
+        except Exception:  # noqa: BLE001 - recording an exception must never raise
+            return None
 
     @functools.wraps(sdk_set_status)
     def set_status(self, status, description=None):

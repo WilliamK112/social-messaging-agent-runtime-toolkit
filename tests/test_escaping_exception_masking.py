@@ -291,3 +291,110 @@ def test_a_fallback_keeps_a_spaced_number_masked():
     with pytest.raises(MaskedHandlerError) as raised:
         run_handler(_raise(Routed(SPACED)))
     assert str(raised.value) == "Routed: +...0100 via node ...3456"
+
+
+# ── a spaced number must not survive through text the arguments feed ─────────
+
+
+def test_a_spaced_number_in_a_text_that_formats_an_argument_by_type_is_masked():
+    """The masked number argument no longer formats with ``:d``, so the error
+    falls back; the fallback's text must carry the spaced number masked."""
+
+    class Coded3(Exception):
+        def __str__(self) -> str:
+            return f"{self.args[0]} code {self.args[1]:d}"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Coded3(SPACED, 525555550100)))
+    assert str(raised.value) == "Coded3: +...0100 code ...0100"
+
+
+def test_a_spaced_number_in_an_exception_group_message_is_masked():
+    """``ExceptionGroup`` prints its ``message`` attribute, not ``args``, so
+    masking the arguments alone leaves the spaced number whole in its text."""
+    group = ExceptionGroup(SPACED, [ValueError("x")])
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(group))
+    assert str(raised.value) == "ExceptionGroup: +...0100 (1 sub-exception)"
+
+
+# ── follow-ups from #213's review ─────────────────────────────────────────────
+
+
+def test_the_fallback_does_not_carry_the_unmasked_original_as_its_context():
+    """``__suppress_context__`` only hides the original from a printed
+    traceback; anything that walks ``__context__`` would still read it."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    assert traceback.extract_tb(raised.value.__traceback__)[-1].name == "coro"
+
+
+def test_notes_are_masked_on_an_error_whose_text_is_masked_in_place():
+    exc = RuntimeError(f"recipient {PHONE} unknown")
+    exc.add_note(f"while sending to {PHONE}")
+    with pytest.raises(RuntimeError) as raised:
+        run_handler(_raise(exc))
+    assert raised.value is exc
+    assert raised.value.__notes__ == ["while sending to +...0100"]
+
+
+def test_notes_are_masked_on_an_error_whose_text_holds_no_number():
+    exc = RuntimeError("send failed")
+    exc.add_note(f"recipient {PHONE}")
+    with pytest.raises(RuntimeError) as raised:
+        run_handler(_raise(exc))
+    assert str(raised.value) == "send failed"
+    assert raised.value.__notes__ == ["recipient +...0100"]
+
+
+def test_the_stand_in_keeps_the_original_notes_masked():
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+    exc = Opaque()
+    exc.add_note(f"while sending to {PHONE}")
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(exc))
+    assert raised.value.__notes__ == ["while sending to +...0100"]
+
+
+def test_notes_that_raise_on_read_still_leave_the_stand_in_masked():
+    """The stand-in is what keeps the number out, so a ``__notes__`` that
+    raises on read must not let the original escape instead."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+        @property
+        def __notes__(self):
+            raise KeyError(f"no notes for {PHONE}")
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert str(raised.value) == "Opaque: cannot reach +...0100"
+
+
+def test_read_only_notes_are_masked_on_the_stand_in():
+    """``_mask_notes`` cannot assign a read-only ``__notes__``; each note is
+    masked again as the stand-in copies it."""
+
+    class Opaque(Exception):
+        def __str__(self) -> str:
+            return f"cannot reach {PHONE}"
+
+        @property
+        def __notes__(self):
+            return [f"while sending to {PHONE}"]
+
+    with pytest.raises(MaskedHandlerError) as raised:
+        run_handler(_raise(Opaque()))
+    assert raised.value.__notes__ == ["while sending to +...0100"]
